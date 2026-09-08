@@ -49,6 +49,25 @@ def privacy():
     )
 
 
+@app_routes.route("/tos")
+def tos():
+    # public, no login required - same idea as /privacy
+    return render_template(
+        "tos.html",
+        bot_name=os.getenv("BOT_NAME", "Gambly"),
+        contact=os.getenv("PRIVACY_CONTACT", "").strip(),
+    )
+
+
+@app_routes.route("/invite")
+def invite():
+    # Set this exact URL as the "Custom URL" under Install Link in the
+    # Discord Developer Portal. Discord redirects here whenever someone
+    # clicks "Add App" on your bot's profile, and this just forwards them
+    # on to the real, guild-locked OAuth2 install URL below.
+    return redirect(_invite_url())
+
+
 @app_routes.route("/dashboard")
 @login_required
 def dashboard_home():
@@ -98,7 +117,13 @@ def bot_admin_home():
 def _invite_url():
     client_id = os.getenv("DISCORD_CLIENT_ID", "")
     perms = os.getenv("DISCORD_BOT_PERMISSIONS", "277025705024")
+    guild_id = os.getenv("GUILD_ID", "").strip()
     params = {"client_id": client_id, "scope": "bot applications.commands", "permissions": perms}
+    if guild_id:
+        # Locks the install to this one server: Discord pre-selects it and
+        # greys out the server picker so it can't be added anywhere else.
+        params["guild_id"] = guild_id
+        params["disable_guild_select"] = "true"
     return f"https://discord.com/oauth2/authorize?{urlencode(params)}"
 
 

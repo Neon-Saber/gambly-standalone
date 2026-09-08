@@ -31,6 +31,10 @@
       <button class="nav-item" data-tab="activity">Activity log</button>
       <div class="nav-divider"></div>
       <button class="nav-item" data-tab="danger" style="color:var(--red-bright)">Danger zone</button>
+      <div class="sidebar-legal">
+        <a href="{{ url_for('app_routes.tos') }}">Terms</a>
+        <a href="{{ url_for('app_routes.privacy') }}">Privacy</a>
+      </div>
     </div>
 
     <div class="guild-main">

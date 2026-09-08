@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ bot_name }} — Terms of Service</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<style>
+  .prose-wrap { max-width: 760px; margin: 0 auto; padding: 48px 24px 80px; }
+  .prose-wrap h1 { font-size: 26px; margin-bottom: 4px; }
+  .prose-wrap .updated { color: var(--muted, #8a9490); font-size: 13px; margin-bottom: 32px; }
+  .prose-wrap h2 { font-size: 17px; margin: 32px 0 10px; color: var(--gold, #c8a24d); }
+  .prose-wrap p, .prose-wrap li { line-height: 1.65; font-size: 14.5px; }
+  .prose-wrap ul { padding-left: 20px; margin: 8px 0; }
+  .prose-wrap li { margin: 4px 0; }
+  .prose-wrap code { background: var(--bg-2, #17211c); padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+  .prose-wrap a { color: var(--gold-bright, #ddbb63); text-decoration: underline; }
+  .back { display: inline-block; margin-top: 40px; }
+</style>
+</head>
+<body>
+  <div class="prose-wrap">
+    <h1>{{ bot_name }} — Terms of Service</h1>
+    <div class="updated">These terms are specific to {{ bot_name }}, a private Discord bot, and apply to anyone using it in the one server it runs in.</div>
+
+    <h2>What {{ bot_name }} is</h2>
+    <p>{{ bot_name }} is a private Discord bot providing a fictional-currency casino/economy game, moderation tools,
+    a support-ticket system, and configurable activity logging for the staff of one specific Discord server. It
+    does not accept invites to other servers.</p>
+
+    <h2>Fictional currency only</h2>
+    <p>All balances, bets, winnings, and losses inside {{ bot_name }} are fictional in-game currency with no
+    real-world monetary value. They cannot be purchased, exchanged, cashed out, or redeemed for real money,
+    goods, or services. Nothing in the bot constitutes real gambling.</p>
+
+    <h2>Acceptable use</h2>
+    <ul>
+      <li>Don't attempt to exploit, duplicate, or abuse bugs in the economy or games for unintended gain.</li>
+      <li>Don't use automation, self-bots, or alternate accounts to farm in-game currency.</li>
+      <li>Don't use the bot's ticket, report, or moderation-facing features to harass other members or staff.</li>
+      <li>Follow the rules of the Discord server the bot is running in, and Discord's own Terms of Service and
+      Community Guidelines.</li>
+    </ul>
+
+    <h2>Moderation & enforcement</h2>
+    <p>Server staff may issue warnings, adjust or reset in-game balances, restrict access to features, or ban a
+    user from using the bot, at their discretion, for violations of these terms or the server's own rules.
+    In-game currency and progress have no guaranteed value and may be reset, adjusted, or removed by staff at
+    any time, including for anti-abuse reasons.</p>
+
+    <h2>No warranty</h2>
+    <p>{{ bot_name }} is provided "as is," without warranty of any kind. The bot's operator does not guarantee
+    uninterrupted availability and is not liable for loss of in-game currency, items, or progress resulting from
+    bugs, downtime, resets, or moderation action.</p>
+
+    <h2>Changes</h2>
+    <p>These terms may be updated as the bot's features change. Continued use of {{ bot_name }} after an update
+    means you accept the current terms.</p>
+
+    <h2>Data & privacy</h2>
+    <p>See the <a href="{{ url_for('app_routes.privacy') }}">Privacy Policy</a> for what data {{ bot_name }}
+    collects and how to delete it.</p>
+
+    {% if contact %}
+    <h2>Contact</h2>
+    <p>Questions about these terms: {{ contact }}</p>
+    {% endif %}
+
+    <a class="back" href="{{ url_for('app_routes.landing') }}">&larr; Back</a>
+  </div>
+</body>
+</html>

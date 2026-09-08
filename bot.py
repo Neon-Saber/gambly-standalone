@@ -538,6 +538,21 @@ async def before_weekly_tournament_check():
     await bot.wait_until_ready()
 
 
+import hashlib
+
+_CMD_HASH_FILE = Path(__file__).parent / ".command_hash.json"
+
+
+def _current_command_hash():
+    # fingerprint of every command's name/description/options - anything
+    # that would actually require Discord to know about a change
+    sig = []
+    for c in bot.pending_application_commands:
+        sig.append(c.to_dict())
+    blob = json.dumps(sig, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
 @bot.event
 async def on_connect():
     # py-cord normally does this silently as part of its default on_connect
@@ -545,11 +560,31 @@ async def on_connect():
     # command syncing is the step most likely to hang/fail (Discord rate
     # limits, bad token permissions, etc.) and "nothing printed for 30
     # seconds" otherwise looks identical to "frozen".
+    #
+    # IMPORTANT: on_connect fires on every reconnect, not just the first
+    # startup. Discord caps guild application-command *creates* at 200/day
+    # (error 30034), and a full bulk sync counts against that every time -
+    # so during normal dev restarts this cap gets burned through fast for
+    # zero reason if nothing actually changed. Skip the sync entirely
+    # unless the command set's fingerprint differs from last time.
+    new_hash = _current_command_hash()
+    old_hash = None
+    if _CMD_HASH_FILE.exists():
+        try:
+            old_hash = json.loads(_CMD_HASH_FILE.read_text()).get("hash")
+        except Exception:
+            old_hash = None
+
+    if new_hash == old_hash:
+        print(f"commands unchanged ({len(bot.pending_application_commands)}) - skipping sync")
+        return
+
     print(f"connected - syncing commands to guild {GUILD_ID}..." if GUILD_ID
           else "connected - syncing commands globally (GUILD_ID not set)...")
     if bot.auto_sync_commands:
         await bot.sync_commands()
     print(f"synced {len(bot.pending_application_commands)} command(s)")
+    _CMD_HASH_FILE.write_text(json.dumps({"hash": new_hash}))
 
 
 @bot.event
