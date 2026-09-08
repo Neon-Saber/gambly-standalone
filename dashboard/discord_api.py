@@ -150,6 +150,14 @@ def bot_fetch_my_guilds(force=False):
             params["after"] = after
         r = requests.get(f"{API_BASE}/users/@me/guilds", headers=_bot_headers(), params=params, timeout=10)
         if r.status_code != 200:
+            # don't fail silently - an empty dict here makes every single
+            # server show up as "Not installed" on the dashboard even when
+            # the bot is actually in them. 401 almost always means
+            # DISCORD_TOKEN is missing/wrong/stale wherever this is hosted
+            # (check it separately per-host - Render env vars are not the
+            # same as your local .env file).
+            print(f"[bot_fetch_my_guilds] Discord returned {r.status_code}: {r.text[:200]} "
+                  f"- check DISCORD_TOKEN is set correctly on this host")
             break
         page = r.json()
         if not page:
