@@ -1,0 +1,12 @@
+[
+  {
+    "ts": 1788861018.7023346,
+    "guild": "999",
+    "text": "[dashboard: tester] updated moderation/logging settings: staff_role_id -> 55, ticket_category_id -> 77, log_mod_enabled -> True, log_mod_channel -> 42"
+  },
+  {
+    "ts": 1788861018.706367,
+    "guild": "999",
+    "text": "[dashboard: tester] updated moderation/logging settings: ticket_category_id -> None"
+  }
+]

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ bot_name }} — Your servers</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<div class="shell" style="flex-direction:column;">
+  <div class="topbar">
+    <div class="topbar-left">
+      {% include "_mark.html" %}
+      <span>{{ bot_name }}</span>
+    </div>
+    <div class="topbar-right">
+      {% if bot_admin %}<a class="btn btn-sm" href="{{ url_for('app_routes.bot_admin_home') }}">Bot admin</a>{% endif %}
+      <a class="btn btn-sm btn-ghost" href="{{ url_for('auth.logout') }}">Log out</a>
+    </div>
+  </div>
+
+  <div class="page">
+    <div class="picker-head">
+      <div>
+        <h1>Your servers</h1>
+        <p>Servers where Discord says you can manage settings. Pick one to configure {{ bot_name }}.</p>
+      </div>
+      <a class="btn btn-gold" href="{{ invite_url }}" target="_blank" rel="noopener">Add to a server</a>
+    </div>
+
+    {% if guilds %}
+    <div class="guild-grid">
+      {% for g in guilds %}
+        {% if g.installed %}
+        <a class="guild-card" href="{{ url_for('app_routes.dashboard_guild', gid=g.id) }}">
+          <div class="guild-icon">{% if g.icon %}<img src="{{ g.icon }}" alt="">{% else %}{{ g.name[:1] }}{% endif %}</div>
+          <div class="guild-meta">
+            <div class="name">{{ g.name }}</div>
+            <div class="tag tag-active">● Configure</div>
+          </div>
+        </a>
+        {% else %}
+        <a class="guild-card disabled" href="{{ invite_url }}" target="_blank" rel="noopener">
+          <div class="guild-icon">{% if g.icon %}<img src="{{ g.icon }}" alt="">{% else %}{{ g.name[:1] }}{% endif %}</div>
+          <div class="guild-meta">
+            <div class="name">{{ g.name }}</div>
+            <div class="tag tag-invite">Not installed — invite</div>
+          </div>
+        </a>
+        {% endif %}
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty">You don't manage any servers on Discord yet. Once you have Manage Server permission somewhere, it'll show up here.</div>
+    {% endif %}
+  </div>
+</div>
+</body>
+</html>

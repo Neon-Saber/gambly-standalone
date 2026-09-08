@@ -1,0 +1,303 @@
+/* ---------------------------------------------------------------------
+   Design tokens
+   A ledger-and-felt palette: near-black charcoal-green background (the
+   card table), brass/gold for primary actions and money figures, muted
+   felt-green for positive states, a dulled red for losses/danger. Text
+   is a warm ivory rather than pure white. Two type families: Fraunces
+   (serif, a little idiosyncratic) for the wordmark and page titles only,
+   IBM Plex Sans for everything you actually read, IBM Plex Mono for
+   every number that represents chips so columns line up like a ledger.
+------------------------------------------------------------------------ */
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --bg-0: #0c1210;
+  --bg-1: #121b17;
+  --bg-2: #17211c;
+  --bg-3: #1e2b24;
+  --line: #2a3a33;
+  --line-soft: #202e28;
+  --ink: #ece7db;
+  --ink-dim: #a9b3ac;
+  --ink-faint: #6f7d75;
+  --gold: #c8a24d;
+  --gold-bright: #ddbb63;
+  --gold-dim: #8a713a;
+  --felt: #4f8a63;
+  --felt-bright: #6bb083;
+  --red: #b8564a;
+  --red-bright: #d16f61;
+  --radius: 7px;
+  --radius-lg: 10px;
+  --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.4);
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-body: 'IBM Plex Sans', -apple-system, Segoe UI, Roboto, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+html { color-scheme: dark; }
+body {
+  margin: 0;
+  background: var(--bg-0);
+  background-image:
+    radial-gradient(1200px 500px at 12% -10%, rgba(200, 162, 77, 0.05), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(79, 138, 99, 0.05), transparent 55%);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+a { color: inherit; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; letter-spacing: 0.002em; }
+.mono { font-family: var(--font-mono); }
+.chip { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+::selection { background: var(--gold-dim); color: #14100a; }
+
+button, input, select, textarea { font-family: inherit; font-size: inherit; }
+
+/* ---------------- buttons ---------------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--bg-3);
+  color: var(--ink);
+  padding: 9px 16px;
+  font-size: 13.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn:hover { border-color: #3a4d43; background: #223027; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-gold { background: var(--gold); border-color: var(--gold); color: #1a1408; font-weight: 600; }
+.btn-gold:hover { background: var(--gold-bright); border-color: var(--gold-bright); }
+.btn-danger { background: transparent; border-color: var(--red); color: var(--red-bright); }
+.btn-danger:hover { background: rgba(184, 86, 74, 0.12); }
+.btn-ghost { background: transparent; border-color: transparent; }
+.btn-ghost:hover { background: var(--bg-2); }
+.btn-sm { padding: 5px 10px; font-size: 12.5px; }
+.btn-block { width: 100%; }
+
+/* ---------------- landing / login ---------------- */
+.landing {
+  min-height: 100vh;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 24px;
+  position: relative;
+  overflow: hidden;
+}
+.landing::before {
+  content: "";
+  position: absolute; inset: 0;
+  background-image: repeating-linear-gradient(45deg, rgba(200,162,77,0.025) 0 2px, transparent 2px 34px),
+                     repeating-linear-gradient(-45deg, rgba(200,162,77,0.025) 0 2px, transparent 2px 34px);
+  pointer-events: none;
+}
+.landing-mark {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 40px; position: relative;
+}
+.landing-mark svg { width: 30px; height: 30px; }
+.landing-mark span { font-family: var(--font-display); font-size: 20px; letter-spacing: 0.01em; }
+.landing-card {
+  position: relative;
+  width: 100%; max-width: 380px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 34px 30px 28px;
+  text-align: center;
+}
+.landing-card::before {
+  content: "";
+  position: absolute; top: 0; left: 16px; right: 16px; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--gold), transparent);
+}
+.landing-card h1 { font-size: 22px; margin-bottom: 8px; }
+.landing-card p { color: var(--ink-dim); font-size: 13.5px; margin: 0 0 26px; line-height: 1.55; }
+.discord-btn {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  width: 100%; padding: 12px 16px;
+  background: #5865F2; color: #fff;
+  border-radius: var(--radius); border: none;
+  font-weight: 600; font-size: 14px; cursor: pointer; text-decoration: none;
+  transition: background 120ms ease;
+}
+.discord-btn:hover { background: #4954c4; }
+.landing-foot { margin-top: 26px; font-size: 12px; color: var(--ink-faint); }
+
+/* ---------------- app shell ---------------- */
+.shell { display: flex; min-height: 100vh; }
+.topbar {
+  height: 56px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.topbar-left { display: flex; align-items: center; gap: 10px; }
+.topbar-left svg { width: 20px; height: 20px; }
+.topbar-left span { font-family: var(--font-display); font-size: 16px; }
+.topbar-crumb { color: var(--ink-faint); font-size: 13px; }
+.topbar-crumb b { color: var(--ink); font-weight: 500; }
+.topbar-right { display: flex; align-items: center; gap: 14px; }
+.user-chip { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-dim); }
+.user-chip img { width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--line); }
+
+.page { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; width: 100%; }
+
+/* ---------------- guild picker ---------------- */
+.picker-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 22px; flex-wrap: wrap; gap: 10px; }
+.picker-head h1 { font-size: 24px; }
+.picker-head p { color: var(--ink-dim); margin: 6px 0 0; font-size: 13.5px; }
+.guild-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.guild-card {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-lg);
+  background: var(--bg-1); text-decoration: none; color: var(--ink);
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+.guild-card:hover { border-color: var(--gold-dim); transform: translateY(-1px); }
+.guild-card.disabled { opacity: 0.55; cursor: default; }
+.guild-card.disabled:hover { border-color: var(--line); transform: none; }
+.guild-icon {
+  width: 42px; height: 42px; border-radius: 50%; flex-shrink: 0;
+  background: var(--bg-3); display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display); font-size: 15px; color: var(--ink-dim);
+  overflow: hidden; border: 1px solid var(--line-soft);
+}
+.guild-icon img { width: 100%; height: 100%; object-fit: cover; }
+.guild-meta { min-width: 0; flex: 1; }
+.guild-meta .name { font-weight: 500; font-size: 13.8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.guild-meta .tag { font-size: 11.5px; color: var(--ink-faint); margin-top: 2px; }
+.tag-active { color: var(--felt-bright); }
+.tag-invite { color: var(--gold); }
+.tag-warn { color: var(--red-bright); }
+.guild-meta .substat { font-size: 11px; color: var(--ink-faint); margin-top: 1px; }
+.guild-meta .gid { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint); opacity: 0.7; margin-top: 1px; }
+.guild-card .guild-icon.ghost { border-style: dashed; opacity: 0.7; }
+
+/* ---------------- guild dashboard layout ---------------- */
+.guild-shell { display: flex; flex: 1; min-height: 0; }
+.sidebar {
+  width: 220px; flex-shrink: 0;
+  background: var(--bg-1); border-right: 1px solid var(--line);
+  padding: 18px 12px; display: flex; flex-direction: column; gap: 2px;
+}
+.sidebar a, .sidebar button.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: var(--radius);
+  color: var(--ink-dim); text-decoration: none; font-size: 13.5px;
+  border: none; background: none; width: 100%; text-align: left; cursor: pointer;
+}
+.sidebar .nav-item:hover { background: var(--bg-2); color: var(--ink); }
+.sidebar .nav-item.active { background: var(--bg-3); color: var(--gold); font-weight: 500; }
+.sidebar .nav-divider { height: 1px; background: var(--line-soft); margin: 10px 4px; }
+.sidebar .nav-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); padding: 10px 12px 4px; }
+.guild-main { flex: 1; min-width: 0; padding: 26px 28px 60px; overflow-y: auto; }
+.guild-main-head { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+.guild-main-head .guild-icon { width: 36px; height: 36px; }
+.guild-main-head h1 { font-size: 20px; }
+
+/* ---------------- stat row ---------------- */
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 22px; }
+.stat { background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
+.stat .num { font-family: var(--font-mono); font-size: 19px; font-weight: 600; }
+.stat .label { font-size: 11.5px; color: var(--ink-faint); margin-top: 4px; }
+.stat.warn .num { color: var(--gold); }
+.stat.danger .num { color: var(--red-bright); }
+.stat.good .num { color: var(--felt-bright); }
+
+/* ---------------- cards / sections ---------------- */
+.card { background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 20px 22px; margin-bottom: 16px; }
+.card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; gap: 10px; flex-wrap: wrap; }
+.card-head h2 { font-size: 15px; color: var(--ink); font-weight: 600; font-family: var(--font-body); }
+.card-head .hint { font-size: 12px; color: var(--ink-faint); }
+.card.danger { border-color: rgba(184, 86, 74, 0.35); }
+.card.danger .card-head h2 { color: var(--red-bright); }
+
+.field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 14px; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-size: 12px; color: var(--ink-dim); }
+.field .desc { font-size: 11.5px; color: var(--ink-faint); }
+
+input[type=text], input[type=number], input[type=search], select {
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  width: 100%;
+}
+input:focus, select:focus, button:focus-visible {
+  outline: 2px solid var(--gold-dim);
+  outline-offset: 1px;
+  border-color: var(--gold-dim);
+}
+.input-row { display: flex; gap: 8px; align-items: center; }
+
+/* toggle switch */
+.switch { position: relative; display: inline-block; width: 38px; height: 21px; flex-shrink: 0; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch .track {
+  position: absolute; inset: 0; background: var(--bg-3); border: 1px solid var(--line);
+  border-radius: 999px; cursor: pointer; transition: background 120ms ease;
+}
+.switch .track::before {
+  content: ""; position: absolute; height: 15px; width: 15px; left: 2px; top: 2px;
+  background: var(--ink-faint); border-radius: 50%; transition: transform 120ms ease, background 120ms ease;
+}
+.switch input:checked + .track { background: rgba(200, 162, 77, 0.18); border-color: var(--gold-dim); }
+.switch input:checked + .track::before { transform: translateX(17px); background: var(--gold); }
+.switch-row { display: flex; align-items: center; gap: 10px; }
+.switch-row .lbl { font-size: 13px; }
+
+/* ---------------- table ---------------- */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+th { color: var(--ink-faint); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: var(--bg-2); }
+td.num, th.num { font-family: var(--font-mono); }
+.player-name { display: flex; align-items: center; gap: 8px; }
+.player-name .pid { color: var(--ink-faint); font-size: 11px; }
+
+.badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; border: 1px solid var(--line); }
+.badge-gold { color: var(--gold); border-color: var(--gold-dim); }
+.badge-red { color: var(--red-bright); border-color: rgba(184,86,74,0.5); }
+.badge-green { color: var(--felt-bright); border-color: rgba(79,138,99,0.5); }
+.badge-muted { color: var(--ink-faint); }
+
+/* ---------------- misc ---------------- */
+.toast {
+  position: fixed; bottom: 20px; right: 20px; z-index: 50;
+  background: var(--bg-3); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 11px 16px; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,0.4);
+  display: flex; align-items: center; gap: 8px;
+}
+.toast.error { border-color: rgba(184,86,74,0.5); color: var(--red-bright); }
+.toast.ok { border-color: rgba(79,138,99,0.5); color: var(--felt-bright); }
+
+.empty { color: var(--ink-faint); font-size: 13px; padding: 20px 0; text-align: center; }
+.log-item { padding: 9px 0; border-bottom: 1px solid var(--line-soft); font-size: 13px; display: flex; gap: 10px; }
+.log-item:last-child { border-bottom: none; }
+.log-item .t { color: var(--ink-faint); font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; flex-shrink: 0; padding-top: 1px; }
+
+.error-page { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; }
+.error-page h1 { font-size: 44px; color: var(--gold); margin-bottom: 8px; }
+.error-page p { color: var(--ink-dim); max-width: 380px; margin-bottom: 22px; }
+.error-code { font-family: var(--font-mono); color: var(--ink-faint); font-size: 12px; margin-top: 14px; }
+
+@media (max-width: 780px) {
+  .guild-shell { flex-direction: column; }
+  .sidebar { width: 100%; flex-direction: row; overflow-x: auto; border-right: none; border-bottom: 1px solid var(--line); }
+  .sidebar .nav-label, .sidebar .nav-divider { display: none; }
+  .guild-main { padding: 20px 16px 40px; }
+}

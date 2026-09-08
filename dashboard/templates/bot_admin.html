@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ bot_name }} — Bot admin</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<div class="shell" style="flex-direction:column;">
+  <div class="topbar">
+    <div class="topbar-left">
+      {% include "_mark.html" %}
+      <span>{{ bot_name }}</span>
+      <span class="topbar-crumb">/ <b>Bot admin</b></span>
+    </div>
+    <div class="topbar-right">
+      <a class="btn btn-sm btn-ghost" href="{{ url_for('app_routes.dashboard_home') }}">Your servers</a>
+      <a class="btn btn-sm btn-ghost" href="{{ url_for('auth.logout') }}">Log out</a>
+    </div>
+  </div>
+  <div class="page" id="admin-root">
+    <div class="picker-head">
+      <div>
+        <h1>Bot admin</h1>
+        <p>Cross-server tools. Visible to accounts listed in BOT_ADMIN_IDS only.</p>
+      </div>
+      <a class="btn" href="/api/export_all.csv">Export all balances (CSV)</a>
+    </div>
+    <div class="stat-row" id="admin-stats"></div>
+
+    <div class="card">
+      <div class="card-head"><h2>Find a player across every server</h2></div>
+      <div class="input-row" style="margin-bottom:12px;max-width:420px;">
+        <input type="search" id="admin-search" placeholder="Name or user ID">
+      </div>
+      <div class="table-wrap"><table id="admin-search-table"><thead>
+        <tr><th>Player</th><th>Server</th><th class="num">Wallet</th><th class="num">Bank</th></tr>
+      </thead><tbody></tbody></table></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Every server</h2>
+        <span class="hint">Green = bot's actually in it. Red = has activity but isn't installed - almost always someone using a slash command via their personal app install, not a real add.</span>
+      </div>
+      <div class="guild-grid" id="admin-guilds-grid"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Global defaults</h2><span class="hint">Read by every server via get_setting()</span></div>
+      <div class="field-grid" id="admin-settings-fields"></div>
+      <button class="btn btn-gold" id="admin-settings-save">Save defaults</button>
+    </div>
+  </div>
+</div>
+<div id="toast-root"></div>
+<script src="{{ url_for('static', filename='js/api.js') }}"></script>
+<script src="{{ url_for('static', filename='js/bot_admin.js') }}"></script>
+</body>
+</html>

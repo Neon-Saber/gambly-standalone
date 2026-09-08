@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ bot_name }} — Dashboard</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body data-gid="{{ gid }}" data-bot-admin="{{ '1' if bot_admin else '0' }}">
+<div class="shell" style="flex-direction:column;">
+  <div class="topbar">
+    <div class="topbar-left">
+      {% include "_mark.html" %}
+      <span>{{ bot_name }}</span>
+      <span class="topbar-crumb">/ <b id="crumb-name">…</b></span>
+    </div>
+    <div class="topbar-right">
+      <a class="btn btn-sm btn-ghost" href="{{ url_for('app_routes.dashboard_home') }}">All servers</a>
+      <a class="btn btn-sm btn-ghost" href="{{ url_for('auth.logout') }}">Log out</a>
+    </div>
+  </div>
+
+  <div class="guild-shell">
+    <div class="sidebar">
+      <div class="guild-icon" id="side-icon" style="width:40px;height:40px;margin:2px auto 12px;font-size:16px;"></div>
+      <button class="nav-item active" data-tab="overview">Overview</button>
+      <button class="nav-item" data-tab="players">Players</button>
+      <button class="nav-item" data-tab="settings">Server settings</button>
+      <button class="nav-item" data-tab="moderation">Moderation & Logging</button>
+      <button class="nav-item" data-tab="bounties">Bounties</button>
+      <button class="nav-item" data-tab="activity">Activity log</button>
+      <div class="nav-divider"></div>
+      <button class="nav-item" data-tab="danger" style="color:var(--red-bright)">Danger zone</button>
+    </div>
+
+    <div class="guild-main">
+      <div class="guild-main-head">
+        <div class="guild-icon" id="head-icon"></div>
+        <h1 id="head-name">Loading…</h1>
+      </div>
+
+      <div id="tab-overview" class="tab-panel"></div>
+      <div id="tab-players" class="tab-panel" style="display:none;"></div>
+      <div id="tab-settings" class="tab-panel" style="display:none;"></div>
+      <div id="tab-moderation" class="tab-panel" style="display:none;"></div>
+      <div id="tab-bounties" class="tab-panel" style="display:none;"></div>
+      <div id="tab-activity" class="tab-panel" style="display:none;"></div>
+      <div id="tab-danger" class="tab-panel" style="display:none;"></div>
+    </div>
+  </div>
+</div>
+<div id="toast-root"></div>
+<script src="{{ url_for('static', filename='js/api.js') }}"></script>
+<script src="{{ url_for('static', filename='js/guild.js') }}"></script>
+</body>
+</html>

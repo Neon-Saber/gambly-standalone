@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ bot_name }} — Privacy Policy</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<style>
+  .prose-wrap { max-width: 760px; margin: 0 auto; padding: 48px 24px 80px; }
+  .prose-wrap h1 { font-size: 26px; margin-bottom: 4px; }
+  .prose-wrap .updated { color: var(--muted, #8a9490); font-size: 13px; margin-bottom: 32px; }
+  .prose-wrap h2 { font-size: 17px; margin: 32px 0 10px; color: var(--gold, #c8a24d); }
+  .prose-wrap p, .prose-wrap li { line-height: 1.65; font-size: 14.5px; }
+  .prose-wrap ul { padding-left: 20px; margin: 8px 0; }
+  .prose-wrap li { margin: 4px 0; }
+  .prose-wrap code { background: var(--bg-2, #17211c); padding: 1px 6px; border-radius: 4px; font-size: 13px; }
+  .prose-wrap a { color: var(--gold-bright, #ddbb63); text-decoration: underline; }
+  .back { display: inline-block; margin-top: 40px; }
+</style>
+</head>
+<body>
+  <div class="prose-wrap">
+    <h1>{{ bot_name }} — Privacy Policy</h1>
+    <div class="updated">This policy is specific to {{ bot_name }}, a Discord bot, and describes exactly what it collects and why.</div>
+
+    <h2>What {{ bot_name }} is</h2>
+    <p>{{ bot_name }} is a private Discord bot that runs in a single, specific Discord server (it will not accept
+    an invite to any other server). It provides a fictional-currency casino/economy game, moderation tools, a
+    support-ticket system, and configurable activity logging for that server's staff.</p>
+
+    <h2>Data collected through Discord</h2>
+    <ul>
+      <li><strong>Discord user ID and display name</strong> — to know whose balance, warning, or ticket belongs to whom.</li>
+      <li><strong>Server membership and roles</strong> — to check permissions (e.g. is someone staff) and to run
+      moderation actions.</li>
+      <li><strong>Message content</strong> — read only (a) to recognize commands typed with this server's prefix,
+      and (b) if the server's staff turn on message logging, to copy the text of an edited or deleted message into
+      that server's own private staff log channel. Message content is never written to a file or database, and
+      never leaves the server it was posted in.</li>
+    </ul>
+
+    <h2>Data stored outside Discord</h2>
+    <p>The bot's operator hosts a small amount of data on their own server, tied to your Discord user ID, so the
+    bot's features work between sessions:</p>
+    <ul>
+      <li>Your in-game balance, bank, inventory, business, and achievement progress (all fictional currency —
+      no real money or payment information is ever involved).</li>
+      <li>Moderation warnings issued against you: the reason text, which staff member issued it, and when.</li>
+      <li>Server configuration chosen by staff (which channels/roles are used for what) — this isn't about you
+      personally, but is stored the same way.</li>
+    </ul>
+    <p>None of this is sold, shared with third parties, used for advertising, or used to train AI/ML models.
+    It exists only to make the bot's own features work, for staff of the one server this bot runs in.</p>
+
+    <h2>Deleting your data</h2>
+    <p>Run <code>/deletemydata</code> (or <code>!deletemydata</code>, using this server's prefix) at any time to
+    permanently delete your stored balance/inventory/business data and warning history. You can also ask the
+    server's staff to do this for you. If the bot is ever removed from the server, all server-specific data is
+    deleted along with it.</p>
+
+    <h2>Children's privacy</h2>
+    <p>{{ bot_name }} is intended for use within Discord under Discord's own Terms of Service, which require users
+    to meet Discord's minimum age requirement. The bot does not knowingly collect additional data from children
+    beyond what's described above.</p>
+
+    <h2>Contact</h2>
+    {% if contact %}
+    <p>Questions about this policy or your data: <a href="mailto:{{ contact }}">{{ contact }}</a></p>
+    {% else %}
+    <p>Questions about this policy or your data: contact this server's staff directly.
+    <em>(Bot operator: set <code>PRIVACY_CONTACT</code> in <code>.env</code> to show a specific email here instead.)</em></p>
+    {% endif %}
+
+    <a class="back" href="{{ url_for('app_routes.landing') }}">← back</a>
+  </div>
+</body>
+</html>
