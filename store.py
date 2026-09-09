@@ -46,6 +46,8 @@ _UPSTASH_URL = (os.getenv("UPSTASH_REDIS_REST_URL") or "").rstrip("/")
 _UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN") or ""
 ENABLED = bool(_UPSTASH_URL and _UPSTASH_TOKEN)
 
+print(f"[store] shared storage: {'Upstash (' + _UPSTASH_URL + ')' if ENABLED else 'LOCAL FILES ONLY - set UPSTASH_REDIS_REST_URL/TOKEN to sync across machines'}", flush=True)
+
 _LOCAL_BASE = Path(__file__).parent
 _WARNED = set()  # only print the "falling back to local file" warning once per key, not on every call
 
