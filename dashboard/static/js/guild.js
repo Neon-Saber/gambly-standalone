@@ -23,6 +23,37 @@ function iconHtml(name, url, size) {
   return escapeHtml((name || '?').slice(0, 1).toUpperCase());
 }
 
+// Build <option> HTML for a channel/role picker, given a list from
+// bot_fetch_channels()/bot_fetch_roles() (or null if that call failed -
+// usually a missing/bad DISCORD_TOKEN on whichever machine runs the
+// dashboard). This used to just render a single disabled "couldn't load"
+// option with value="" whenever the fetch failed - which meant hitting
+// Save while the list was down silently WIPED whatever channel/role was
+// already configured back to nothing (exactly what broke welcome/leveling/
+// member-count saves). Now: an already-saved id is always preserved as a
+// locked-in option (with a visible warning) instead of getting lost, and
+// the same warning shows if a saved id no longer matches anything in a
+// list that DID load (e.g. the channel got deleted).
+function pickerOptions(list, selectedId, opts) {
+  opts = opts || {};
+  const emptyLabel = opts.emptyLabel || 'None';
+  const prefix = opts.prefix || '';
+  selectedId = selectedId ? String(selectedId) : '';
+  if (!list) {
+    if (selectedId) {
+      return `<option value="${selectedId}" selected>⚠ couldn't load the list - keeping current (${selectedId})</option>`;
+    }
+    return `<option value="">⚠ Couldn't load — check the bot token</option>`;
+  }
+  const known = list.some((c) => c.id === selectedId);
+  const missing = (selectedId && !known)
+    ? `<option value="${selectedId}" selected>⚠ unknown (${selectedId}) - deleted?</option>`
+    : '';
+  const rendered = list.map((c) =>
+    `<option value="${c.id}" ${selectedId === c.id ? 'selected' : ''}>${prefix}${escapeHtml(c.name)}</option>`).join('');
+  return `<option value="">${emptyLabel}</option>${missing}${rendered}`;
+}
+
 async function init() {
   STATE = await apiGet(`/api/guild/${GID}`);
   if (!STATE) return;
@@ -235,14 +266,7 @@ async function renderSettings() {
   });
 
   const roles = await apiGet(`/api/guild/${GID}/roles`);
-  const sel = document.getElementById('s-manager-role');
-  if (roles) {
-    sel.innerHTML = '<option value="">None</option>' + roles.map((r) =>
-      `<option value="${r.id}" ${String(STATE.manager_role) === r.id ? 'selected' : ''}>${escapeHtml(r.name)}</option>`
-    ).join('');
-  } else {
-    sel.innerHTML = `<option value="">Couldn't load roles — check the bot token</option>`;
-  }
+  document.getElementById('s-manager-role').innerHTML = pickerOptions(roles, STATE.manager_role);
 }
 
 // -------------------------------------------------------- moderation & logging
@@ -327,20 +351,9 @@ async function renderModeration() {
     apiGet(`/api/guild/${GID}/channels`),
   ]);
 
-  const roleOptions = (selectedId) => roles
-    ? '<option value="">None</option>' + roles.map((r) =>
-        `<option value="${r.id}" ${String(selectedId) === r.id ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')
-    : `<option value="">Couldn't load roles — check the bot token</option>`;
-
-  const channelOptions = (selectedId) => channels
-    ? '<option value="">None</option>' + channels.text.map((c) =>
-        `<option value="${c.id}" ${String(selectedId) === c.id ? 'selected' : ''}>#${escapeHtml(c.name)}</option>`).join('')
-    : `<option value="">Couldn't load channels — check the bot token</option>`;
-
-  const categoryOptions = (selectedId) => channels
-    ? '<option value="">None</option>' + channels.categories.map((c) =>
-        `<option value="${c.id}" ${String(selectedId) === c.id ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('')
-    : `<option value="">Couldn't load channels — check the bot token</option>`;
+  const roleOptions = (selectedId) => pickerOptions(roles, selectedId);
+  const channelOptions = (selectedId) => pickerOptions(channels ? channels.text : null, selectedId, { prefix: '#' });
+  const categoryOptions = (selectedId) => pickerOptions(channels ? channels.categories : null, selectedId);
 
   document.getElementById('m-staff-role').innerHTML = roleOptions(STATE.staff_role_id);
   document.getElementById('m-ticket-category').innerHTML = categoryOptions(STATE.ticket_category_id);
@@ -406,10 +419,7 @@ async function renderGameChannels() {
   });
 
   const channels = await apiGet(`/api/guild/${GID}/channels`);
-  const channelOptions = (selectedId) => channels
-    ? '<option value="">Auto-detect</option>' + channels.text.map((c) =>
-        `<option value="${c.id}" ${String(selectedId) === c.id ? 'selected' : ''}>#${escapeHtml(c.name)}</option>`).join('')
-    : `<option value="">Couldn't load channels — check the bot token</option>`;
+  const channelOptions = (selectedId) => pickerOptions(channels ? channels.text : null, selectedId, { emptyLabel: 'Auto-detect', prefix: '#' });
 
   document.querySelectorAll('#tab-games tr[data-game]').forEach((row) => {
     const g = row.dataset.game;
@@ -514,21 +524,14 @@ async function renderLeveling() {
     apiGet(`/api/guild/${GID}/level_leaderboard`),
   ]);
 
-  const channelOptions = (selectedId) => channels
-    ? '<option value="">None</option>' + channels.text.map((c) =>
-        `<option value="${c.id}" ${String(selectedId) === c.id ? 'selected' : ''}>#${escapeHtml(c.name)}</option>`).join('')
-    : `<option value="">Couldn't load channels — check the bot token</option>`;
-  const roleOptions = (selectedId) => roles
-    ? '<option value="">Pick a role…</option>' + roles.map((r) =>
-        `<option value="${r.id}" ${String(selectedId) === r.id ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')
-    : `<option value="">Couldn't load roles — check the bot token</option>`;
+  const channelOptions = (selectedId) => pickerOptions(channels ? channels.text : null, selectedId, { prefix: '#' });
+  const roleOptions = (selectedId) => pickerOptions(roles, selectedId, { emptyLabel: 'Pick a role…' });
 
   document.getElementById('w-channel').innerHTML = channelOptions(STATE.welcome_channel_id);
   document.getElementById('l-channel').innerHTML = channelOptions(STATE.level_channel_id);
-  document.getElementById('mc-channel').innerHTML = channels && channels.voice
-    ? '<option value="">None</option>' + channels.voice.map((c) =>
-        `<option value="${c.id}" ${String(STATE.member_count_channel_id) === c.id ? 'selected' : ''}>🔊 ${escapeHtml(c.name)}</option>`).join('')
-    : `<option value="">Couldn't load voice channels — check the bot token</option>`;
+  document.getElementById('mc-channel').innerHTML = pickerOptions(
+    channels ? channels.voice : null, STATE.member_count_channel_id, { prefix: '🔊 ' }
+  );
 
   document.getElementById('w-save').addEventListener('click', async () => {
     const r = await apiPost(`/api/guild/${GID}/welcome_config`, {
