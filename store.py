@@ -42,18 +42,42 @@ from pathlib import Path
 
 import requests
 
-_UPSTASH_URL = (os.getenv("UPSTASH_REDIS_REST_URL") or "").rstrip("/")
-_UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN") or ""
-ENABLED = bool(_UPSTASH_URL and _UPSTASH_TOKEN)
-
-print(f"[store] shared storage: {'Upstash (' + _UPSTASH_URL + ')' if ENABLED else 'LOCAL FILES ONLY - set UPSTASH_REDIS_REST_URL/TOKEN to sync across machines'}", flush=True)
-
 _LOCAL_BASE = Path(__file__).parent
 _WARNED = set()  # only print the "falling back to local file" warning once per key, not on every call
+_backend_logged = False  # only print which backend is active once, on first real use
+
+
+def _upstash_url():
+    # read fresh every time instead of once at import - if this were computed
+    # at module load, it would depend on whatever's already in os.environ at
+    # the moment `import store` runs, which can be BEFORE load_dotenv() has
+    # populated it from a .env file depending on import order elsewhere (this
+    # bit the project once already - see bot.py's import order comment).
+    return (os.getenv("UPSTASH_REDIS_REST_URL") or "").rstrip("/")
+
+
+def _upstash_token():
+    return os.getenv("UPSTASH_REDIS_REST_TOKEN") or ""
+
+
+def _enabled():
+    return bool(_upstash_url() and _upstash_token())
+
+
+def _log_backend_once():
+    global _backend_logged
+    if _backend_logged:
+        return
+    _backend_logged = True
+    if _enabled():
+        print(f"[store] shared storage: Upstash ({_upstash_url()})", flush=True)
+    else:
+        print("[store] shared storage: LOCAL FILES ONLY - set UPSTASH_REDIS_REST_URL/TOKEN "
+              "to sync across machines", flush=True)
 
 
 def _headers():
-    return {"Authorization": f"Bearer {_UPSTASH_TOKEN}"}
+    return {"Authorization": f"Bearer {_upstash_token()}"}
 
 
 def _key_for(name_or_path):
@@ -81,11 +105,12 @@ def load(name_or_path, default=None):
     not given) if nothing's stored yet anywhere."""
     if default is None:
         default = {}
+    _log_backend_once()
     key = _key_for(name_or_path)
 
-    if ENABLED:
+    if _enabled():
         try:
-            r = requests.post(_UPSTASH_URL, headers=_headers(), json=["GET", key], timeout=10)
+            r = requests.post(_upstash_url(), headers=_headers(), json=["GET", key], timeout=10)
             r.raise_for_status()
             raw = r.json().get("result")
             if raw is None:
@@ -107,11 +132,12 @@ def load(name_or_path, default=None):
 
 
 def save(name_or_path, data):
+    _log_backend_once()
     key = _key_for(name_or_path)
 
-    if ENABLED:
+    if _enabled():
         try:
-            r = requests.post(_UPSTASH_URL, headers=_headers(), json=["SET", key, json.dumps(data)], timeout=10)
+            r = requests.post(_upstash_url(), headers=_headers(), json=["SET", key, json.dumps(data)], timeout=10)
             r.raise_for_status()
             return
         except Exception as e:

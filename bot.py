@@ -1,10 +1,14 @@
 import json, os, random, time, asyncio
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()  # must run before any of our own modules import (store.py reads
+                # UPSTASH_REDIS_REST_URL/TOKEN from the environment at import
+                # time, so this has to happen first or it never sees .env)
+
 import discord
 from discord.ext import commands, tasks
 from discord import Option
-from dotenv import load_dotenv
 
 import config_schema as cfgschema
 import logging_utils
@@ -13,7 +17,6 @@ import cog_utils as cu
 import store
 from cogs.moderation import load_warnings, save_warnings
 
-load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
 
 # ---------------- single-server lock ----------------
