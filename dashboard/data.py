@@ -1,8 +1,8 @@
-import json
 import time
 from pathlib import Path
 
 import config_schema as cfgschema
+import store
 
 BASE = Path(__file__).parent.parent
 econ_file = BASE / "economy.json"
@@ -24,20 +24,11 @@ SETTING_DEFAULTS = {
 
 
 def load(path):
-    if not path.exists():
-        return {}
-    with open(path, "r") as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError:
-            return {}
+    return store.load(path)
 
 
 def save(path, data):
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-    tmp.replace(path)
+    store.save(path, data)
 
 
 def econ_path_for(gid):
@@ -45,13 +36,7 @@ def econ_path_for(gid):
 
 
 def log_event(guild_name, text, actor=None):
-    entries = []
-    if log_file.exists():
-        with open(log_file, "r") as f:
-            try:
-                entries = json.load(f)
-            except json.JSONDecodeError:
-                entries = []
+    entries = store.load(log_file, default=[])
     tag = f"[dashboard: {actor}]" if actor else "[dashboard]"
     entries.append({"ts": time.time(), "guild": guild_name, "text": f"{tag} {text}"})
     entries = entries[-500:]

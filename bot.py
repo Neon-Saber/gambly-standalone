@@ -10,6 +10,7 @@ import config_schema as cfgschema
 import logging_utils
 import embeds
 import cog_utils as cu
+import store
 from cogs.moderation import load_warnings, save_warnings
 
 load_dotenv()
@@ -94,13 +95,7 @@ HOLIDAY_SYMS = {"🎄": 40, "🎁": 25, "⛄": 15, "🦌": 10, "🔔": 5, "⭐":
 # still exist as fallback defaults so the bot works fine with no settings.json
 # at all, but the admin panel can override them without touching code/restarting
 def loadSettings():
-    if not settings_file.exists():
-        return {}
-    with open(settings_file, "r") as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError:
-            return {}
+    return store.load(settings_file)
 
 
 def get_setting(key, default):
@@ -295,18 +290,12 @@ def loadEcon(file=None):
     # file defaults to the server ledger so every pre-existing call site that
     # doesn't pass one (guild-only commands) behaves exactly like before
     file = file or econ_file
-    if not file.exists():
-        return {}
-    f = open(file, "r")
-    d = json.load(f)
-    f.close()
-    return d
+    return store.load(file)
 
 
 def save(econ, file=None):
     file = file or econ_file
-    with open(file, "w") as f:
-        json.dump(econ, f, indent=2)
+    store.save(file, econ)
 
 
 def ensure_guild(econ, guild):
@@ -432,17 +421,10 @@ def chips(n):
 # not every coinflip, just the stuff worth an admin actually seeing:
 # loans, shop buys, bans, manager changes, resets
 def log_event(guild_name, text):
-    entries = []
-    if log_file.exists():
-        with open(log_file, "r") as f:
-            try:
-                entries = json.load(f)
-            except json.JSONDecodeError:
-                entries = []
+    entries = store.load(log_file, default=[])
     entries.append({"ts": time.time(), "guild": guild_name, "text": text})
-    entries = entries[-500:]  # keep the file from growing forever
-    with open(log_file, "w") as f:
-        json.dump(entries, f, indent=2)
+    entries = entries[-500:]  # keep it from growing forever
+    store.save(log_file, entries)
 
 
 # ---------------- per-server config (prefix, managers, bans) ----------------
@@ -663,7 +645,7 @@ async def on_ready():
 # kept out of this file on purpose - this file is already huge, and the
 # gambling logic above shouldn't have to be scrolled past to find/edit the
 # mod, ticket, report, or logging commands.
-for _ext in ("cogs.moderation", "cogs.tickets", "cogs.reports", "cogs.logging_events", "cogs.leveling", "cogs.welcome"):
+for _ext in ("cogs.moderation", "cogs.tickets", "cogs.reports", "cogs.logging_events", "cogs.leveling", "cogs.welcome", "cogs.server_stats"):
     try:
         bot.load_extension(_ext)
         print(f"loaded {_ext}")
@@ -728,6 +710,10 @@ HELP_TEXT = (
     "**welcome messages**\n"
     "posted automatically when someone joins - channel and message template are set in the dashboard's "
     "Leveling & Welcome tab (no command for this, it's just on/off + configured there)\n\n"
+    "**member count**\n"
+    "a voice channel can auto-rename itself to show the live non-bot member count (e.g. 'Members: 42') - "
+    "toggle, channel, and name template are in the dashboard's Leveling & Welcome tab. updates on join/leave "
+    "(rate-limit permitting) and every 10 minutes regardless\n\n"
     "**your data**\n"
     "deletemydata - permanently wipes your own casino account and warning history here, no staff needed\n\n"
     "**per-game channels**\n"

@@ -16,7 +16,6 @@ usual one-time-env-default-then-dashboard pattern; the message template
 uses config_schema.env_first() instead, so an env var can force it live
 if set, otherwise the dashboard's saved template is used.
 """
-import json
 import random
 import time
 from pathlib import Path
@@ -27,6 +26,7 @@ from discord import Option
 
 import config_schema as cfgschema
 import cog_utils as cu
+import store
 
 LEVELS_FILE = Path(__file__).parent.parent / "levels.json"
 XP_MIN, XP_MAX = 15, 25
@@ -36,20 +36,11 @@ DEFAULT_LEVEL_MESSAGE = "🎉 {user} just reached **level {level}**!"
 
 
 def load_levels():
-    if not LEVELS_FILE.exists():
-        return {}
-    try:
-        with open(LEVELS_FILE, "r") as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        return {}
+    return store.load(LEVELS_FILE)
 
 
 def save_levels(data):
-    tmp = LEVELS_FILE.with_suffix(".json.tmp")
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-    tmp.replace(LEVELS_FILE)
+    store.save(LEVELS_FILE, data)
 
 
 def xp_needed_for(level):

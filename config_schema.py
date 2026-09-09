@@ -11,10 +11,11 @@ No discord.py import here on purpose - the dashboard process shouldn't
 need the Discord library just to read/write JSON, and this module needs to
 work identically for both processes.
 """
-import json
 import os
 import time
 from pathlib import Path
+
+import store
 
 BASE_DIR = Path(__file__).parent
 CFG_FILE = BASE_DIR / "config.json"
@@ -65,20 +66,11 @@ def env_first(env_key, dashboard_value, default=""):
 
 
 def load_cfg():
-    if not CFG_FILE.exists():
-        return {}
-    with open(CFG_FILE, "r") as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError:
-            return {}
+    return store.load(CFG_FILE)
 
 
 def save_cfg(cfg):
-    tmp = CFG_FILE.with_suffix(".json.tmp")
-    with open(tmp, "w") as f:
-        json.dump(cfg, f, indent=2)
-    tmp.replace(CFG_FILE)
+    store.save(CFG_FILE, cfg)
 
 
 def ensure_guild(all_cfg, gid, name=None):
@@ -159,6 +151,15 @@ def ensure_guild(all_cfg, gid, name=None):
     g.setdefault("level_channel_id", _env_int("LEVEL_CHANNEL_ID"))
     g.setdefault("level_message", None)  # dashboard template; LEVEL_UP_MESSAGE env wins live if set
     g.setdefault("level_roles", {})  # {"<level>": role_id} - awarded (stacking, never removed) on level-up
+
+    # ---- live member-count voice channel (cogs/server_stats.py) ----
+    # renames a voice channel to show how many non-bot members are in the
+    # server, e.g. "Members: 42". channel follows the usual one-time-env-
+    # default pattern; the NAME TEMPLATE uses env_first() like the welcome/
+    # level-up messages do.
+    g.setdefault("member_count_channel_id", _env_int("MEMBER_COUNT_CHANNEL_ID"))
+    g.setdefault("member_count_enabled", _env_int("MEMBER_COUNT_CHANNEL_ID") is not None)
+    g.setdefault("member_count_template", None)  # dashboard template; MEMBER_COUNT_TEMPLATE env wins live if set
 
     # ---- logging (message / mod / report / withdraw / deposit / ticket) ----
     for log_type, env_var in LOG_TYPES.items():

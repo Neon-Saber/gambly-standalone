@@ -24,7 +24,6 @@ Note: the prefix version of /ban doesn't take `delete_days` (awkward to
 parse alongside a free-text reason from a plain message) - it always
 leaves message history alone. Use the slash command if you need that.
 """
-import json
 import time
 from pathlib import Path
 from datetime import timedelta, datetime, timezone
@@ -36,6 +35,7 @@ from discord import Option
 import logging_utils
 import embeds
 import cog_utils as cu
+import store
 
 WARNINGS_FILE = Path(__file__).parent.parent / "warnings.json"
 MAX_TIMEOUT_SECONDS = 28 * 86400  # Discord's own timeout cap
@@ -43,18 +43,11 @@ MAX_SLOWMODE_SECONDS = 21600  # Discord's own slowmode cap (6h)
 
 
 def load_warnings():
-    if not WARNINGS_FILE.exists():
-        return {}
-    try:
-        with open(WARNINGS_FILE, "r") as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        return {}
+    return store.load(WARNINGS_FILE)
 
 
 def save_warnings(data):
-    with open(WARNINGS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    store.save(WARNINGS_FILE, data)
 
 
 def staff_check():
@@ -307,22 +300,41 @@ class Moderation(commands.Cog):
 
     # ----------------------------------------------------------- slowmode --
     async def _do_slowmode(self, ctx, seconds):
+        human = cu.format_duration(seconds)
         await ctx.channel.edit(slowmode_delay=seconds)
-        await self.log(ctx.guild, "slowmode changed", ctx.author, f"#{ctx.channel.name} -> {seconds}s",
+        await self.log(ctx.guild, "slowmode changed", ctx.author, f"#{ctx.channel.name} -> {human if seconds else '0s'}",
                         color=embeds.COLOR_INFO, moderator=ctx.author)
-        await cu.respond(ctx, f"🐌 slowmode set to {seconds}s in {ctx.channel.mention}" if seconds
+        await cu.respond(ctx, f"🐌 slowmode set to {human} in {ctx.channel.mention}" if seconds
                           else f"slowmode disabled in {ctx.channel.mention}")
+
+    def _parse_slowmode_duration(self, raw):
+        """0/off/none/disable all mean "turn it off" - parse_duration()
+        rejects a literal 0 (it treats "nothing parsed" as an error), so
+        that case is special-cased here before handing off to it."""
+        cleaned = str(raw).strip().lower()
+        if cleaned in ("0", "off", "none", "disable", "disabled"):
+            return 0
+        seconds = cu.parse_duration(raw, default_unit="s")
+        if seconds > MAX_SLOWMODE_SECONDS:
+            raise ValueError(f"Discord caps slowmode at {cu.format_duration(MAX_SLOWMODE_SECONDS)}")
+        return seconds
 
     @commands.slash_command(name="slowmode", description="set this channel's slowmode delay")
     @staff_check()
-    async def slowmode(self, ctx, seconds: Option(int, "seconds between messages, 0 to disable", min_value=0, max_value=21600)):
+    async def slowmode(self, ctx, duration: Option(str, "e.g. 10s, 5m, 1h, or 'off' to disable (max 6h)")):
+        try:
+            seconds = self._parse_slowmode_duration(duration)
+        except ValueError as e:
+            return await cu.respond(ctx, str(e), ephemeral=True)
         await self._do_slowmode(ctx, seconds)
 
     @commands.command(name="slowmode")
     @staff_check()
-    async def slowmode_cmd(self, ctx, seconds: int):
-        if seconds < 0 or seconds > 21600:
-            return await cu.respond(ctx, "seconds must be between 0 and 21600 (6h)", ephemeral=True)
+    async def slowmode_cmd(self, ctx, duration: str):
+        try:
+            seconds = self._parse_slowmode_duration(duration)
+        except ValueError as e:
+            return await cu.respond(ctx, str(e), ephemeral=True)
         await self._do_slowmode(ctx, seconds)
 
     # --------------------------------------------------------- lock/unlock --
