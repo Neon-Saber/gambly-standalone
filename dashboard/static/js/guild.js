@@ -479,6 +479,28 @@ async function renderLeveling() {
     </div>
 
     <div class="card">
+      <div class="card-head">
+        <h2>Live member count</h2>
+        <span class="hint">Renames a voice channel to show the live non-bot member count. Updates on join/leave and every 10 minutes (Discord rate-limits channel renames, so it can lag slightly on very active servers)</span>
+      </div>
+      <div class="switch-row" style="margin-bottom:16px;">
+        <label class="switch"><input type="checkbox" id="mc-enabled" ${STATE.member_count_enabled ? 'checked' : ''}><span class="track"></span></label>
+        <span class="lbl">Enable the counter</span>
+      </div>
+      <div class="field-grid">
+        <div class="field">
+          <label>Voice channel</label>
+          <select id="mc-channel"><option value="">Loading channels…</option></select>
+        </div>
+        <div class="field">
+          <label>Name template</label>
+          <input type="text" id="mc-template" value="${escapeHtml(STATE.member_count_template || '')}" placeholder="Members: {count}">
+        </div>
+      </div>
+      <button class="btn btn-gold" id="mc-save" style="margin-top:12px;">Save</button>
+    </div>
+
+    <div class="card">
       <div class="card-head"><h2>Leaderboard preview</h2></div>
       <div class="table-wrap"><table>
         <thead><tr><th>Player</th><th>Level</th><th>Total XP</th></tr></thead>
@@ -503,6 +525,10 @@ async function renderLeveling() {
 
   document.getElementById('w-channel').innerHTML = channelOptions(STATE.welcome_channel_id);
   document.getElementById('l-channel').innerHTML = channelOptions(STATE.level_channel_id);
+  document.getElementById('mc-channel').innerHTML = channels && channels.voice
+    ? '<option value="">None</option>' + channels.voice.map((c) =>
+        `<option value="${c.id}" ${String(STATE.member_count_channel_id) === c.id ? 'selected' : ''}>🔊 ${escapeHtml(c.name)}</option>`).join('')
+    : `<option value="">Couldn't load voice channels — check the bot token</option>`;
 
   document.getElementById('w-save').addEventListener('click', async () => {
     const r = await apiPost(`/api/guild/${GID}/welcome_config`, {
@@ -518,6 +544,15 @@ async function renderLeveling() {
       leveling_enabled: document.getElementById('l-enabled').checked,
       level_channel_id: document.getElementById('l-channel').value || null,
       level_message: document.getElementById('l-message').value,
+    });
+    if (r) { toast('Saved.', 'ok'); refresh(); }
+  });
+
+  document.getElementById('mc-save').addEventListener('click', async () => {
+    const r = await apiPost(`/api/guild/${GID}/member_count_config`, {
+      member_count_enabled: document.getElementById('mc-enabled').checked,
+      member_count_channel_id: document.getElementById('mc-channel').value || null,
+      member_count_template: document.getElementById('mc-template').value,
     });
     if (r) { toast('Saved.', 'ok'); refresh(); }
   });

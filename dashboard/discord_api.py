@@ -197,25 +197,31 @@ def bot_fetch_roles(guild_id):
 # the full list, most of the rest (voice, stage, forum, etc.) aren't useful
 # as a log/ticket destination.
 CHANNEL_TYPE_TEXT = 0
+CHANNEL_TYPE_VOICE = 2
 CHANNEL_TYPE_CATEGORY = 4
 CHANNEL_TYPE_ANNOUNCEMENT = 5
 
 
 def bot_fetch_channels(guild_id):
-    """Text channels and categories for this guild, straight from Discord.
-    Used to populate the log-channel / ticket-category dropdowns on the
-    dashboard's Moderation & Logging tab."""
+    """Text, voice, and category channels for this guild, straight from
+    Discord. Used to populate every channel-picker dropdown on the
+    dashboard (log channels, ticket category, per-game locks, welcome/
+    level-up channels, and the voice channel used for the live member
+    count)."""
     r = requests.get(f"{API_BASE}/guilds/{guild_id}/channels", headers=_bot_headers(), timeout=10)
     if r.status_code != 200:
-        return {"text": [], "categories": []}
+        return {"text": [], "voice": [], "categories": []}
     channels = r.json()
     text = [{"id": c["id"], "name": c["name"], "parent_id": c.get("parent_id")}
             for c in channels if c.get("type") in (CHANNEL_TYPE_TEXT, CHANNEL_TYPE_ANNOUNCEMENT)]
+    voice = [{"id": c["id"], "name": c["name"], "parent_id": c.get("parent_id")}
+             for c in channels if c.get("type") == CHANNEL_TYPE_VOICE]
     categories = [{"id": c["id"], "name": c["name"]}
                   for c in channels if c.get("type") == CHANNEL_TYPE_CATEGORY]
     text.sort(key=lambda c: c["name"].lower())
+    voice.sort(key=lambda c: c["name"].lower())
     categories.sort(key=lambda c: c["name"].lower())
-    return {"text": text, "categories": categories}
+    return {"text": text, "voice": voice, "categories": categories}
 
 
 def bot_leave_guild(guild_id):
