@@ -222,6 +222,14 @@ bot = commands.Bot(
 
 
 # ---------------- per-game channel locking (global check on every command) ----------------
+class GameChannelLocked(commands.CheckFailure):
+    """Raised (instead of a plain False) so on_application_command_error
+    can recognize this specific case and not pile a generic "something
+    broke" message on top of the "play that in #channel instead" message
+    the check below already sent."""
+    pass
+
+
 async def _game_channel_check(ctx):
     cmd_name = ctx.command.name if ctx.command else None
     if not cmd_name or cmd_name not in cu.GAME_CHANNEL_ALIASES:
@@ -239,7 +247,7 @@ async def _game_channel_check(ctx):
         return True
 
     await cu.respond(ctx, f"play that in <#{channel_id}> instead", ephemeral=True)
-    return False
+    raise GameChannelLocked()
 
 
 bot.add_check(_game_channel_check)
@@ -550,14 +558,86 @@ import hashlib
 _CMD_HASH_FILE = Path(__file__).parent / ".command_hash.json"
 
 
-def _current_command_hash():
-    # fingerprint of every command's name/description/options - anything
-    # that would actually require Discord to know about a change
-    sig = []
+def _command_hashes():
+    """{command name: fingerprint of that command's name/description/
+    options} for every currently-registered local command. Per-command on
+    purpose (not one hash for the whole set) - that's what lets on_connect
+    below tell exactly WHICH commands changed instead of just "something
+    changed"."""
+    hashes = {}
     for c in bot.pending_application_commands:
-        sig.append(c.to_dict())
-    blob = json.dumps(sig, sort_keys=True, default=str)
-    return hashlib.sha256(blob.encode()).hexdigest()
+        blob = json.dumps(c.to_dict(), sort_keys=True, default=str)
+        hashes[c.name] = hashlib.sha256(blob.encode()).hexdigest()
+    return hashes
+
+
+def _load_cached_hashes():
+    if not _CMD_HASH_FILE.exists():
+        return {}
+    try:
+        cached = json.loads(_CMD_HASH_FILE.read_text())
+    except Exception:
+        return {}
+    # old format from before per-command hashing was {"hash": "..."} - on
+    # the first boot after upgrading this just looks like "everything is
+    # new", which is harmless: Discord treats an upsert of a name that
+    # already exists as an edit, not a create, so it doesn't cost anything
+    # from the 200/day creates budget. Every boot after that is properly
+    # incremental once the new-format file is written below.
+    return cached.get("commands", {})
+
+
+def _save_cached_hashes(hashes):
+    _CMD_HASH_FILE.write_text(json.dumps({"commands": hashes}))
+
+
+async def _sync_commands_incrementally(new_hashes, old_hashes):
+    """Only touches commands that actually changed since the last
+    successful sync - added, edited, or removed - instead of bulk-
+    overwriting the entire ~80-command set every time ANYTHING changes.
+    That full-bulk-every-time behavior is what previously burned through
+    Discord's 200-guild-command-CREATES/day cap (error 30034) from just a
+    few restarts while testing.
+
+    Edits and deletes don't count against that cap at all - only genuinely
+    new command names do (a Discord-side rule, nothing this bot controls),
+    so in practice this only ever spends budget on commands that are
+    truly new, never on ones that just got tweaked or removed.
+    """
+    to_create = [name for name in new_hashes if name not in old_hashes]
+    to_delete = [name for name in old_hashes if name not in new_hashes]
+    to_edit = [name for name in new_hashes
+               if name in old_hashes and new_hashes[name] != old_hashes[name]]
+
+    if not (to_create or to_delete or to_edit):
+        return  # only unrelated commands' names churned in old_hashes (e.g. a stale entry) - nothing to actually do
+
+    # one GET to map name -> Discord's command ID, needed for edits/deletes
+    # (creates don't need an existing ID to target). GET calls are free,
+    # they don't count against anything.
+    remote = await bot.http.get_guild_commands(bot.application_id, GUILD_ID)
+    remote_ids = {c["name"]: c["id"] for c in remote}
+    local_by_name = {c.name: c for c in bot.pending_application_commands}
+
+    for name in to_create:
+        await bot.http.upsert_guild_command(bot.application_id, GUILD_ID, local_by_name[name].to_dict())
+    for name in to_edit:
+        remote_id = remote_ids.get(name)
+        if remote_id is None:
+            # shouldn't happen (it was in old_hashes, so Discord should
+            # already know about it) but don't let one weird case take
+            # down the rest of the sync - upsert-by-name still works
+            await bot.http.upsert_guild_command(bot.application_id, GUILD_ID, local_by_name[name].to_dict())
+        else:
+            await bot.http.edit_guild_command(bot.application_id, GUILD_ID, int(remote_id), local_by_name[name].to_dict())
+    for name in to_delete:
+        remote_id = remote_ids.get(name)
+        if remote_id is not None:
+            await bot.http.delete_guild_command(bot.application_id, GUILD_ID, int(remote_id))
+
+    untouched = len(new_hashes) - len(to_create) - len(to_edit)
+    print(f"synced commands: {len(to_create)} created, {len(to_edit)} edited, "
+          f"{len(to_delete)} deleted, {untouched} untouched")
 
 
 @bot.event
@@ -569,29 +649,36 @@ async def on_connect():
     # seconds" otherwise looks identical to "frozen".
     #
     # IMPORTANT: on_connect fires on every reconnect, not just the first
-    # startup. Discord caps guild application-command *creates* at 200/day
-    # (error 30034), and a full bulk sync counts against that every time -
-    # so during normal dev restarts this cap gets burned through fast for
-    # zero reason if nothing actually changed. Skip the sync entirely
-    # unless the command set's fingerprint differs from last time.
-    new_hash = _current_command_hash()
-    old_hash = None
-    if _CMD_HASH_FILE.exists():
-        try:
-            old_hash = json.loads(_CMD_HASH_FILE.read_text()).get("hash")
-        except Exception:
-            old_hash = None
+    # startup, so this needs to be cheap and safe to run repeatedly. Skip
+    # entirely if nothing changed; otherwise sync only what did (see
+    # _sync_commands_incrementally above).
+    new_hashes = _command_hashes()
+    old_hashes = _load_cached_hashes()
 
-    if new_hash == old_hash:
-        print(f"commands unchanged ({len(bot.pending_application_commands)}) - skipping sync")
+    if new_hashes == old_hashes:
+        print(f"commands unchanged ({len(new_hashes)}) - skipping sync")
         return
 
-    print(f"connected - syncing commands to guild {GUILD_ID}..." if GUILD_ID
-          else "connected - syncing commands globally (GUILD_ID not set)...")
-    if bot.auto_sync_commands:
+    if not bot.auto_sync_commands:
+        _save_cached_hashes(new_hashes)
+        return
+
+    if GUILD_ID:
+        print(f"command set changed - syncing only what's different, to guild {GUILD_ID}...")
+        try:
+            await _sync_commands_incrementally(new_hashes, old_hashes)
+        except Exception as e:
+            print(f"incremental command sync failed ({e}) - falling back to a full sync this one time")
+            await bot.sync_commands()
+    else:
+        # no single guild to target an incremental diff at, and global
+        # commands propagate over up to an hour anyway regardless of sync
+        # method - bulk is fine here, this path is only hit if GUILD_ID
+        # isn't set, which this project's single-server design discourages.
+        print("connected - syncing commands globally (GUILD_ID not set)...")
         await bot.sync_commands()
-    print(f"synced {len(bot.pending_application_commands)} command(s)")
-    _CMD_HASH_FILE.write_text(json.dumps({"hash": new_hash}))
+
+    _save_cached_hashes(new_hashes)
 
 
 @bot.event
@@ -688,7 +775,7 @@ HELP_TEXT = (
     "addchips <user> <amt>, removechips <user> <amt>, banuser <user>, unbanuser <user>, resetuser [user], "
     "forgive <user>, setprefix <prefix>, setannounce <channel>\n\n"
     "**server owner only**\n"
-    "setmanager (pick users/roles or auto-create a 'Casino Staff' role), testmode (your own bets always win, "
+    "setmanager (pick users/roles or auto-create a 'Casino Staff' role), !testmode (prefix-only, your own bets always win, "
     "everyone else's games stay normal random, and every toggle is logged)\n\n"
     "**moderation** (staff role, set in the dashboard, or admins)\n"
     "kick <member> [reason], ban <user> [reason] [delete_days], unban <user id>, "
@@ -3216,11 +3303,6 @@ async def do_testmode(ctx):
     await reply(ctx, content=f"testmode is now **{state}** - while on, your own coinflip/dice/slots/roulette/war bets always win so you can sanity-check payouts. everyone else's games are untouched.")
 
 
-@bot.slash_command(name="testmode", description="owner only - dev toggle: your own game bets always win, for testing payouts")
-async def testmode(ctx):
-    await do_testmode(ctx)
-
-
 @bot.command(name="testmode")
 async def testmode_cmd(ctx):
     await do_testmode(ctx)
@@ -3427,6 +3509,8 @@ async def on_application_command_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.respond("admin only, nice try", ephemeral=True)
         return
+    if isinstance(error, GameChannelLocked):
+        return  # already told them which channel to use - nothing more to say
     print(error)
     try:
         await ctx.respond("something broke, check console", ephemeral=True)
@@ -3439,6 +3523,8 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("admin only, nice try")
         return
+    if isinstance(error, GameChannelLocked):
+        return  # already told them which channel to use - nothing more to say
     if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument)):
         await ctx.send(f"check your command args - {error}")
         return
