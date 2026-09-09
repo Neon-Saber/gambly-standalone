@@ -42,9 +42,23 @@ class ServerStats(commands.Cog):
         if not g_cfg.get("member_count_enabled"):
             return
         channel_id = g_cfg.get("member_count_channel_id")
-        channel = guild.get_channel(int(channel_id)) if channel_id else None
-        if channel is None:
+        if not channel_id:
+            print(f"[server_stats] enabled in '{guild.name}' but no voice channel is set - "
+                  f"pick one in the dashboard's Leveling & Welcome tab")
             return
+        channel = guild.get_channel(int(channel_id))
+        if channel is None:
+            # not in the bot's cache for some reason - do a real API call
+            # before giving up, instead of silently doing nothing.
+            try:
+                channel = await guild.fetch_channel(int(channel_id))
+            except (discord.NotFound, discord.Forbidden) as e:
+                print(f"[server_stats] configured member-count channel ({channel_id}) in '{guild.name}' "
+                      f"doesn't exist or the bot can't see it: {e}")
+                return
+            except discord.HTTPException as e:
+                print(f"[server_stats] couldn't resolve member-count channel ({channel_id}) in '{guild.name}': {e}")
+                return
 
         if not force and time.time() - self._last_edit.get(guild.id, 0) < UPDATE_COOLDOWN:
             return  # too soon - the periodic loop below will catch this up
