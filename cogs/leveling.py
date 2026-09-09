@@ -112,7 +112,7 @@ class Leveling(commands.Cog):
 
     async def _announce_level_up(self, guild, member, level, g_cfg):
         channel_id = g_cfg.get("level_channel_id")
-        channel = guild.get_channel(channel_id) if channel_id else None
+        channel = guild.get_channel(int(channel_id)) if channel_id else None
         if channel is None:
             return  # not configured (or the saved channel got deleted) - level still recorded either way
         template = cfgschema.env_first("LEVEL_UP_MESSAGE", g_cfg.get("level_message"), DEFAULT_LEVEL_MESSAGE)

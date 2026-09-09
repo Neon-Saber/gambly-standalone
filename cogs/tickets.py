@@ -47,7 +47,7 @@ class TicketPanelView(discord.ui.View):
                 f"you already have an open ticket: {existing.mention}", ephemeral=True)
 
         settings = logging_utils.get_ticket_settings(guild.id)
-        category = guild.get_channel(settings["category_id"]) if settings["category_id"] else None
+        category = guild.get_channel(int(settings["category_id"])) if settings["category_id"] else None
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -58,7 +58,7 @@ class TicketPanelView(discord.ui.View):
         }
         staff_role_id = logging_utils.get_staff_role_id(guild.id)
         if staff_role_id:
-            staff_role = guild.get_role(staff_role_id)
+            staff_role = guild.get_role(int(staff_role_id))
             if staff_role:
                 overwrites[staff_role] = discord.PermissionOverwrite(
                     view_channel=True, send_messages=True, read_message_history=True)

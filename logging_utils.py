@@ -27,7 +27,7 @@ def resolve_log_channel(guild, log_type):
     channel_id = g.get(f"log_{log_type}_channel")
     if not channel_id:
         return None
-    return guild.get_channel(channel_id)
+    return guild.get_channel(int(channel_id))
 
 
 async def send_log(bot, guild, log_type, embed):
@@ -70,7 +70,7 @@ def is_staff(member: discord.Member) -> bool:
     if member.guild_permissions.administrator:
         return True
     role_id = get_staff_role_id(member.guild.id)
-    if role_id and any(r.id == role_id for r in member.roles):
+    if role_id and any(r.id == int(role_id) for r in member.roles):
         return True
     return False
 

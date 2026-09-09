@@ -215,6 +215,9 @@ def api_guild(gid):
             "level_channel_id": g_cfg.get("level_channel_id"),
             "level_message": g_cfg.get("level_message"),
             "level_roles": g_cfg.get("level_roles", {}),
+            "member_count_enabled": g_cfg.get("member_count_enabled", False),
+            "member_count_channel_id": g_cfg.get("member_count_channel_id"),
+            "member_count_template": g_cfg.get("member_count_template"),
             "logging": {
                 log_type: {
                     "enabled": g_cfg.get(f"log_{log_type}_enabled", False),
@@ -238,7 +241,7 @@ def api_guild_roles(gid):
 @guild_access_required
 def api_guild_channels(gid):
     if gid == d.DM_ID:
-        return jsonify({"text": [], "categories": []})
+        return jsonify({"text": [], "voice": [], "categories": []})
     return jsonify(dapi.bot_fetch_channels(gid))
 
 
@@ -516,11 +519,13 @@ def set_moderation_config(gid):
     changed = []
 
     def _opt_id(key):
-        """None clears it, a digit string sets it, anything else is ignored."""
+        """None clears it, a digit string sets it, anything else is ignored.
+        Stored as a STRING - see config_schema._env_id's docstring for why
+        (JS number precision loss on big Discord snowflake IDs)."""
         if key not in body:
             return
         val = body[key]
-        new_val = int(val) if val not in (None, "") else None
+        new_val = str(int(val)) if val not in (None, "") else None
         if g.get(key) != new_val:
             changed.append(f"{key} -> {new_val}")
         g[key] = new_val
@@ -619,7 +624,7 @@ def set_welcome_config(gid):
         changed.append(f"welcome_enabled -> {g['welcome_enabled']}")
     if "welcome_channel_id" in body:
         val = body["welcome_channel_id"]
-        g["welcome_channel_id"] = int(val) if val not in (None, "") else None
+        g["welcome_channel_id"] = str(int(val)) if val not in (None, "") else None
         changed.append(f"welcome_channel_id -> {g['welcome_channel_id']}")
     if "welcome_message" in body:
         g["welcome_message"] = (body["welcome_message"] or "").strip() or None
@@ -645,7 +650,7 @@ def set_leveling_config(gid):
         changed.append(f"leveling_enabled -> {g['leveling_enabled']}")
     if "level_channel_id" in body:
         val = body["level_channel_id"]
-        g["level_channel_id"] = int(val) if val not in (None, "") else None
+        g["level_channel_id"] = str(int(val)) if val not in (None, "") else None
         changed.append(f"level_channel_id -> {g['level_channel_id']}")
     if "level_message" in body:
         g["level_message"] = (body["level_message"] or "").strip() or None
@@ -675,7 +680,7 @@ def set_level_roles(gid):
         except (TypeError, ValueError):
             continue
         if lvl_int >= 0:
-            parsed[str(lvl_int)] = role_int
+            parsed[str(lvl_int)] = str(role_int)  # string - see config_schema._env_id docstring
     cfg = d.load(d.cfg_file)
     g = d.guild_cfg(cfg, gid)
     g["level_roles"] = parsed
@@ -683,6 +688,32 @@ def set_level_roles(gid):
     d.log_event((g.get("name") or gid), f"updated level roles ({len(parsed)} tier(s))",
                 actor=current_user()["username"])
     return jsonify({"ok": True, "level_roles": parsed})
+
+
+@app_routes.route("/api/guild/<gid>/member_count_config", methods=["POST"])
+@guild_access_required
+def set_member_count_config(gid):
+    if gid == d.DM_ID:
+        return jsonify({"error": "not available for the personal/DM economy"}), 400
+    body = request.get_json() or {}
+    cfg = d.load(d.cfg_file)
+    g = d.guild_cfg(cfg, gid)
+    changed = []
+    if "member_count_enabled" in body:
+        g["member_count_enabled"] = bool(body["member_count_enabled"])
+        changed.append(f"member_count_enabled -> {g['member_count_enabled']}")
+    if "member_count_channel_id" in body:
+        val = body["member_count_channel_id"]
+        g["member_count_channel_id"] = str(int(val)) if val not in (None, "") else None
+        changed.append(f"member_count_channel_id -> {g['member_count_channel_id']}")
+    if "member_count_template" in body:
+        g["member_count_template"] = (body["member_count_template"] or "").strip() or None
+        changed.append("member_count_template updated")
+    d.save(d.cfg_file, cfg)
+    if changed:
+        d.log_event((g.get("name") or gid), f"updated member count settings: {', '.join(changed)}",
+                    actor=current_user()["username"])
+    return jsonify({"ok": True})
 
 
 @app_routes.route("/api/guild/<gid>/level_leaderboard")

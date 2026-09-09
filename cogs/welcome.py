@@ -43,7 +43,7 @@ class Welcome(commands.Cog):
         if not g_cfg.get("welcome_enabled"):
             return
         channel_id = g_cfg.get("welcome_channel_id")
-        channel = guild.get_channel(channel_id) if channel_id else None
+        channel = guild.get_channel(int(channel_id)) if channel_id else None
         if channel is None:
             return
 

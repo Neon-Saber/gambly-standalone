@@ -37,13 +37,24 @@ LOG_TYPES = {
 }
 
 
-def _env_int(name):
-    """Read an integer ID out of the environment, tolerating blank/missing/
-    garbage values instead of throwing - every ID in .env is optional."""
+def _env_id(name):
+    """Read a Discord snowflake ID out of the environment as a STRING,
+    tolerating blank/missing/garbage values instead of throwing - every ID
+    in .env is optional.
+
+    Deliberately a string, not an int: this value ends up round-tripping
+    through the dashboard's JSON API to JavaScript at some point, and JS
+    numbers are IEEE754 doubles that lose precision above 2^53 - Discord
+    snowflakes are regularly bigger than that. Python has no such limit,
+    so storing/returning the digits as a string sidesteps the whole
+    problem everywhere this value travels. Every place that actually calls
+    a discord.py method with one of these (guild.get_channel(),
+    guild.get_role(), etc.) wraps it in int(...) at that call site.
+    """
     raw = (os.getenv(name) or "").strip()
     if not raw.isdigit():
         return None
-    return int(raw)
+    return raw
 
 
 def env_first(env_key, dashboard_value, default=""):
@@ -114,11 +125,11 @@ def ensure_guild(all_cfg, gid, name=None):
     # to anyone with the native Discord permission for a given command (and
     # server Administrators, always). separate from "manager_role" above,
     # which only governs the casino/economy commands.
-    g.setdefault("staff_role_id", _env_int("STAFF_ROLE_ID"))
+    g.setdefault("staff_role_id", _env_id("STAFF_ROLE_ID"))
 
     # ---- ticket ----
-    g.setdefault("ticket_category_id", _env_int("TICKET_CATEGORY_ID"))
-    g.setdefault("ticket_ping_role_id", _env_int("TICKET_PING_ROLE_ID"))
+    g.setdefault("ticket_category_id", _env_id("TICKET_CATEGORY_ID"))
+    g.setdefault("ticket_ping_role_id", _env_id("TICKET_PING_ROLE_ID"))
 
     # ---- per-game channel locking ----
     # {command_name: channel_id_str}. Empty until a channel is auto-detected
@@ -140,15 +151,15 @@ def ensure_guild(all_cfg, gid, name=None):
     # after that). the MESSAGE TEXT is different on purpose - see
     # env_first() above - so ops can force a message from the host without
     # a dashboard trip, but everyday editing happens in the dashboard.
-    g.setdefault("welcome_channel_id", _env_int("WELCOME_CHANNEL_ID"))
-    g.setdefault("welcome_enabled", _env_int("WELCOME_CHANNEL_ID") is not None)
+    g.setdefault("welcome_channel_id", _env_id("WELCOME_CHANNEL_ID"))
+    g.setdefault("welcome_enabled", _env_id("WELCOME_CHANNEL_ID") is not None)
     g.setdefault("welcome_message", None)  # dashboard template; WELCOME_MESSAGE env wins live if set
 
     # ---- leveling ----
     # text-message XP with a per-user cooldown (see cogs/leveling.py),
     # level-up announcements, and optional role rewards per level.
     g.setdefault("leveling_enabled", True)
-    g.setdefault("level_channel_id", _env_int("LEVEL_CHANNEL_ID"))
+    g.setdefault("level_channel_id", _env_id("LEVEL_CHANNEL_ID"))
     g.setdefault("level_message", None)  # dashboard template; LEVEL_UP_MESSAGE env wins live if set
     g.setdefault("level_roles", {})  # {"<level>": role_id} - awarded (stacking, never removed) on level-up
 
@@ -157,13 +168,13 @@ def ensure_guild(all_cfg, gid, name=None):
     # server, e.g. "Members: 42". channel follows the usual one-time-env-
     # default pattern; the NAME TEMPLATE uses env_first() like the welcome/
     # level-up messages do.
-    g.setdefault("member_count_channel_id", _env_int("MEMBER_COUNT_CHANNEL_ID"))
-    g.setdefault("member_count_enabled", _env_int("MEMBER_COUNT_CHANNEL_ID") is not None)
+    g.setdefault("member_count_channel_id", _env_id("MEMBER_COUNT_CHANNEL_ID"))
+    g.setdefault("member_count_enabled", _env_id("MEMBER_COUNT_CHANNEL_ID") is not None)
     g.setdefault("member_count_template", None)  # dashboard template; MEMBER_COUNT_TEMPLATE env wins live if set
 
     # ---- logging (message / mod / report / withdraw / deposit / ticket) ----
     for log_type, env_var in LOG_TYPES.items():
-        env_channel = _env_int(env_var)
+        env_channel = _env_id(env_var)
         g.setdefault(f"log_{log_type}_channel", env_channel)
         g.setdefault(f"log_{log_type}_enabled", env_channel is not None)
 
