@@ -105,9 +105,23 @@ def ensure_guild(all_cfg, gid, name=None):
     # which only governs the casino/economy commands.
     g.setdefault("staff_role_id", _env_int("STAFF_ROLE_ID"))
 
-    # ---- tickets ----
+    # ---- ticket ----
     g.setdefault("ticket_category_id", _env_int("TICKET_CATEGORY_ID"))
     g.setdefault("ticket_ping_role_id", _env_int("TICKET_PING_ROLE_ID"))
+
+    # ---- per-game channel locking ----
+    # {command_name: channel_id_str}. Empty until a channel is auto-detected
+    # by name match or set explicitly via the dashboard/.env - see
+    # cog_utils.resolve_game_channel for the actual resolution order.
+    g.setdefault("game_channels", {})
+
+    # ---- custom per-server "env" ----
+    # freeform {KEY: "value"} strings, editable from the dashboard's Custom
+    # settings tab. cog_utils.get_custom_setting() checks this dict first
+    # and falls back to the real os.environ value of the same key, so any
+    # env var in this project can be overridden per-server without anyone
+    # needing shell/host access.
+    g.setdefault("custom_env", {})
 
     # ---- logging (message / mod / report / withdraw / deposit / ticket) ----
     for log_type, env_var in LOG_TYPES.items():

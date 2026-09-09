@@ -34,7 +34,11 @@ app_routes = Blueprint("app_routes", __name__)
 def landing():
     if current_user():
         return redirect(url_for("app_routes.dashboard_home"))
-    return render_template("landing.html", bot_name=os.getenv("BOT_NAME", "Gambly"))
+    return render_template(
+        "landing.html",
+        bot_name=os.getenv("BOT_NAME", "Gambly"),
+        next=request.args.get("next", ""),
+    )
 
 
 @app_routes.route("/privacy")
@@ -116,7 +120,7 @@ def bot_admin_home():
 
 def _invite_url():
     client_id = os.getenv("DISCORD_CLIENT_ID", "")
-    perms = os.getenv("DISCORD_BOT_PERMISSIONS", "277025705024")
+    perms = os.getenv("DISCORD_BOT_PERMISSIONS", "1376805842006")
     guild_id = os.getenv("GUILD_ID", "").strip()
     params = {"client_id": client_id, "scope": "bot applications.commands", "permissions": perms}
     if guild_id:

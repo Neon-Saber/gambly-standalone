@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import config_schema as cfgschema
 import logging_utils
 import embeds
+import cog_utils as cu
 from cogs.moderation import load_warnings, save_warnings
 
 load_dotenv()
@@ -223,6 +224,30 @@ bot = commands.Bot(
     # to run (ctx.guild, moderation permissions, per-guild config, etc.).
     default_command_integration_types={discord.IntegrationType.guild_install},
 )
+
+
+# ---------------- per-game channel locking (global check on every command) ----------------
+async def _game_channel_check(ctx):
+    cmd_name = ctx.command.name if ctx.command else None
+    if not cmd_name or cmd_name not in cu.GAME_CHANNEL_ALIASES:
+        return True  # not a channel-locked game - never blocked
+    if not ctx.guild:
+        return True  # DMs/group chats have no channels to lock to
+
+    all_cfg = loadCfg()
+    g = get_guild_cfg(all_cfg, ctx.guild)
+    channel_id, changed = cu.resolve_game_channel(ctx.guild, g, cmd_name)
+    if changed:
+        saveCfg(all_cfg)
+
+    if channel_id is None or ctx.channel.id == channel_id:
+        return True
+
+    await cu.respond(ctx, f"play that in <#{channel_id}> instead", ephemeral=True)
+    return False
+
+
+bot.add_check(_game_channel_check)
 
 
 # ---------------- "space" abstraction: server vs. personal (DM/group chat) ----------------

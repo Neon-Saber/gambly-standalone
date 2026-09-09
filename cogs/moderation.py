@@ -38,6 +38,8 @@ import embeds
 import cog_utils as cu
 
 WARNINGS_FILE = Path(__file__).parent.parent / "warnings.json"
+MAX_TIMEOUT_SECONDS = 28 * 86400  # Discord's own timeout cap
+MAX_SLOWMODE_SECONDS = 21600  # Discord's own slowmode cap (6h)
 
 
 def load_warnings():
@@ -168,28 +170,39 @@ class Moderation(commands.Cog):
         await self._do_unban(ctx, user_id)
 
     # ------------------------------------------------------------- timeout --
-    async def _do_mute(self, ctx, member, minutes, reason):
+    async def _do_mute(self, ctx, member, seconds, reason):
         if member.top_role >= ctx.author.top_role and ctx.author.id != ctx.guild.owner_id:
             return await cu.respond(ctx, "can't mute someone with an equal/higher role than you", ephemeral=True)
-        until = discord.utils.utcnow() + timedelta(minutes=minutes)
+        until = discord.utils.utcnow() + timedelta(seconds=seconds)
         await member.timeout(until, reason=f"{ctx.author} ({ctx.author.id}): {reason or 'no reason'}")
+        human = cu.format_duration(seconds)
         await self.log(ctx.guild, "member muted", member, reason, color=embeds.COLOR_WARN,
-                        extra={"duration": f"{minutes}m"}, moderator=ctx.author)
-        await cu.respond(ctx, f"🔇 muted **{member}** for {minutes}m" + (f" — {reason}" if reason else ""))
+                        extra={"duration": human}, moderator=ctx.author)
+        await cu.respond(ctx, f"🔇 muted **{member}** for {human}" + (f" — {reason}" if reason else ""))
 
     @commands.slash_command(name="mute", description="timeout a member so they can't send messages/talk for a while")
     @staff_check()
     async def mute(self, ctx, member: Option(discord.Member, "who"),
-                   minutes: Option(int, "how long, in minutes", min_value=1, max_value=40320),
+                   duration: Option(str, "how long - e.g. 10m, 2h, 1d (a bare number means minutes)"),
                    reason: Option(str, "why", required=False) = None):
-        await self._do_mute(ctx, member, minutes, reason)
+        try:
+            seconds = cu.parse_duration(duration, default_unit="m")
+        except ValueError as e:
+            return await cu.respond(ctx, str(e), ephemeral=True)
+        if seconds > MAX_TIMEOUT_SECONDS:
+            return await cu.respond(ctx, "that's longer than Discord's 28-day timeout limit", ephemeral=True)
+        await self._do_mute(ctx, member, seconds, reason)
 
     @commands.command(name="mute")
     @staff_check()
-    async def mute_cmd(self, ctx, member: discord.Member, minutes: int, *, reason: str = None):
-        if minutes < 1 or minutes > 40320:
-            return await cu.respond(ctx, "minutes must be between 1 and 40320 (28 days)", ephemeral=True)
-        await self._do_mute(ctx, member, minutes, reason)
+    async def mute_cmd(self, ctx, member: discord.Member, duration: str, *, reason: str = None):
+        try:
+            seconds = cu.parse_duration(duration, default_unit="m")
+        except ValueError as e:
+            return await cu.respond(ctx, str(e), ephemeral=True)
+        if seconds > MAX_TIMEOUT_SECONDS:
+            return await cu.respond(ctx, "that's longer than Discord's 28-day timeout limit", ephemeral=True)
+        await self._do_mute(ctx, member, seconds, reason)
 
     async def _do_unmute(self, ctx, member):
         await member.timeout(None, reason=f"unmuted by {ctx.author} ({ctx.author.id})")
