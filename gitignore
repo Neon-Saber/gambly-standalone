@@ -1,0 +1,13 @@
+.env
+.command_hash.json
+.flask_session/
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.tmp
+-e warnings.json
+economy.json
+personal_economy.json
+activity.json
+config.json

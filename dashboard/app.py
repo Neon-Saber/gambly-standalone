@@ -14,6 +14,8 @@ try:
 except ImportError:  # pip install -r requirements.txt not run yet
     _ServerSession = None
 
+import cog_utils as cu
+
 from . import data as d
 from . import discord_api as dapi
 from .auth import (
@@ -203,6 +205,16 @@ def api_guild(gid):
             "staff_role_id": g_cfg.get("staff_role_id"),
             "ticket_category_id": g_cfg.get("ticket_category_id"),
             "ticket_ping_role_id": g_cfg.get("ticket_ping_role_id"),
+            "game_channels": g_cfg.get("game_channels", {}),
+            "custom_env": g_cfg.get("custom_env", {}),
+            "game_list": sorted(cu.GAME_CHANNEL_ALIASES.keys()),
+            "welcome_enabled": g_cfg.get("welcome_enabled", False),
+            "welcome_channel_id": g_cfg.get("welcome_channel_id"),
+            "welcome_message": g_cfg.get("welcome_message"),
+            "leveling_enabled": g_cfg.get("leveling_enabled", True),
+            "level_channel_id": g_cfg.get("level_channel_id"),
+            "level_message": g_cfg.get("level_message"),
+            "level_roles": g_cfg.get("level_roles", {}),
             "logging": {
                 log_type: {
                     "enabled": g_cfg.get(f"log_{log_type}_enabled", False),
@@ -530,6 +542,160 @@ def set_moderation_config(gid):
         d.log_event((g.get("name") or gid), f"updated moderation/logging settings: {', '.join(changed)}",
                     actor=current_user()["username"])
     return jsonify({"ok": True})
+
+
+@app_routes.route("/api/guild/<gid>/game_channels", methods=["POST"])
+@guild_access_required
+def set_game_channels(gid):
+    # {"game_channels": {"<game name>": "<channel id>" | null}} - null/""
+    # clears the override and falls back to auto-detect-by-name again.
+    if gid == d.DM_ID:
+        return jsonify({"error": "not available for the personal/DM economy"}), 400
+    overrides = (request.get_json() or {}).get("game_channels", {})
+    cfg = d.load(d.cfg_file)
+    g = d.guild_cfg(cfg, gid)
+    gc = g.setdefault("game_channels", {})
+    changed = []
+    for game in cu.GAME_CHANNEL_ALIASES:
+        if game not in overrides:
+            continue
+        val = overrides[game]
+        if val in (None, ""):
+            if gc.pop(game, None) is not None:
+                changed.append(f"{game} -> auto-detect")
+        else:
+            try:
+                new_val = str(int(val))
+            except (TypeError, ValueError):
+                continue
+            if gc.get(game) != new_val:
+                changed.append(f"{game} -> <#{new_val}>")
+            gc[game] = new_val
+    d.save(d.cfg_file, cfg)
+    if changed:
+        d.log_event((g.get("name") or gid), f"updated game channel locks: {', '.join(changed)}",
+                    actor=current_user()["username"])
+    return jsonify({"ok": True, "game_channels": gc})
+
+
+@app_routes.route("/api/guild/<gid>/custom_env", methods=["POST"])
+@guild_access_required
+def set_custom_env(gid):
+    # freeform KEY=VALUE lines, same shape as a real .env file - checked by
+    # cog_utils.get_custom_setting() before the real environment variable
+    # of the same name, per-server, no host/shell access needed.
+    if gid == d.DM_ID:
+        return jsonify({"error": "not available for the personal/DM economy"}), 400
+    raw = (request.get_json() or {}).get("raw", "")
+    parsed = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        if key:
+            parsed[key] = val.strip()
+    cfg = d.load(d.cfg_file)
+    g = d.guild_cfg(cfg, gid)
+    g["custom_env"] = parsed
+    d.save(d.cfg_file, cfg)
+    d.log_event((g.get("name") or gid), f"updated custom server env ({len(parsed)} key(s))",
+                actor=current_user()["username"])
+    return jsonify({"ok": True, "custom_env": parsed})
+
+
+@app_routes.route("/api/guild/<gid>/welcome_config", methods=["POST"])
+@guild_access_required
+def set_welcome_config(gid):
+    if gid == d.DM_ID:
+        return jsonify({"error": "not available for the personal/DM economy"}), 400
+    body = request.get_json() or {}
+    cfg = d.load(d.cfg_file)
+    g = d.guild_cfg(cfg, gid)
+    changed = []
+    if "welcome_enabled" in body:
+        g["welcome_enabled"] = bool(body["welcome_enabled"])
+        changed.append(f"welcome_enabled -> {g['welcome_enabled']}")
+    if "welcome_channel_id" in body:
+        val = body["welcome_channel_id"]
+        g["welcome_channel_id"] = int(val) if val not in (None, "") else None
+        changed.append(f"welcome_channel_id -> {g['welcome_channel_id']}")
+    if "welcome_message" in body:
+        g["welcome_message"] = (body["welcome_message"] or "").strip() or None
+        changed.append("welcome_message updated")
+    d.save(d.cfg_file, cfg)
+    if changed:
+        d.log_event((g.get("name") or gid), f"updated welcome settings: {', '.join(changed)}",
+                    actor=current_user()["username"])
+    return jsonify({"ok": True})
+
+
+@app_routes.route("/api/guild/<gid>/leveling_config", methods=["POST"])
+@guild_access_required
+def set_leveling_config(gid):
+    if gid == d.DM_ID:
+        return jsonify({"error": "not available for the personal/DM economy"}), 400
+    body = request.get_json() or {}
+    cfg = d.load(d.cfg_file)
+    g = d.guild_cfg(cfg, gid)
+    changed = []
+    if "leveling_enabled" in body:
+        g["leveling_enabled"] = bool(body["leveling_enabled"])
+        changed.append(f"leveling_enabled -> {g['leveling_enabled']}")
+    if "level_channel_id" in body:
+        val = body["level_channel_id"]
+        g["level_channel_id"] = int(val) if val not in (None, "") else None
+        changed.append(f"level_channel_id -> {g['level_channel_id']}")
+    if "level_message" in body:
+        g["level_message"] = (body["level_message"] or "").strip() or None
+        changed.append("level_message updated")
+    d.save(d.cfg_file, cfg)
+    if changed:
+        d.log_event((g.get("name") or gid), f"updated leveling settings: {', '.join(changed)}",
+                    actor=current_user()["username"])
+    return jsonify({"ok": True})
+
+
+@app_routes.route("/api/guild/<gid>/level_roles", methods=["POST"])
+@guild_access_required
+def set_level_roles(gid):
+    # {"level_roles": {"<level>": "<role id>"}} - full replace, since the
+    # dashboard always sends its whole current table back (simplest to
+    # reason about, and this table is never big enough for that to matter).
+    if gid == d.DM_ID:
+        return jsonify({"error": "not available for the personal/DM economy"}), 400
+    body = request.get_json() or {}
+    raw_roles = body.get("level_roles", {})
+    parsed = {}
+    for lvl, role_id in raw_roles.items():
+        try:
+            lvl_int = int(lvl)
+            role_int = int(role_id)
+        except (TypeError, ValueError):
+            continue
+        if lvl_int >= 0:
+            parsed[str(lvl_int)] = role_int
+    cfg = d.load(d.cfg_file)
+    g = d.guild_cfg(cfg, gid)
+    g["level_roles"] = parsed
+    d.save(d.cfg_file, cfg)
+    d.log_event((g.get("name") or gid), f"updated level roles ({len(parsed)} tier(s))",
+                actor=current_user()["username"])
+    return jsonify({"ok": True, "level_roles": parsed})
+
+
+@app_routes.route("/api/guild/<gid>/level_leaderboard")
+@guild_access_required
+def api_level_leaderboard(gid):
+    if gid == d.DM_ID:
+        return jsonify([])
+    levels = d.load(d.levels_file).get(gid, {})
+    ranked = sorted(levels.items(), key=lambda kv: -kv[1].get("total_xp", 0))[:15]
+    return jsonify([
+        {"id": uid, "name": e.get("name", uid), "level": e.get("level", 0), "total_xp": e.get("total_xp", 0)}
+        for uid, e in ranked
+    ])
 
 
 @app_routes.route("/api/guild/<gid>/bounty", methods=["POST"])

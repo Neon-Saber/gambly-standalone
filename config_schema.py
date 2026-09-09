@@ -45,6 +45,25 @@ def _env_int(name):
     return int(raw)
 
 
+def env_first(env_key, dashboard_value, default=""):
+    """Live env-var override for a piece of freeform text (welcome/level-up
+    message templates, currently). Unlike every ID/channel setting in this
+    schema - which only ever reads its .env var ONCE, as the default the
+    first time a guild's config is created, after which the dashboard is
+    the source of truth - this is checked fresh on every call. That means
+    setting the env var on the host always wins over whatever's saved in
+    the dashboard for that guild, and clearing the env var (leaving it
+    blank) immediately falls back to the dashboard's value again, no
+    restart needed either way. Falls back to `default` if neither is set.
+    """
+    env_val = (os.getenv(env_key) or "").strip()
+    if env_val:
+        return env_val
+    if dashboard_value:
+        return dashboard_value
+    return default
+
+
 def load_cfg():
     if not CFG_FILE.exists():
         return {}
@@ -122,6 +141,24 @@ def ensure_guild(all_cfg, gid, name=None):
     # env var in this project can be overridden per-server without anyone
     # needing shell/host access.
     g.setdefault("custom_env", {})
+
+    # ---- welcome messages ----
+    # channel follows the same one-time-default pattern as every other
+    # channel ID in this schema (env var seeds it once, dashboard owns it
+    # after that). the MESSAGE TEXT is different on purpose - see
+    # env_first() above - so ops can force a message from the host without
+    # a dashboard trip, but everyday editing happens in the dashboard.
+    g.setdefault("welcome_channel_id", _env_int("WELCOME_CHANNEL_ID"))
+    g.setdefault("welcome_enabled", _env_int("WELCOME_CHANNEL_ID") is not None)
+    g.setdefault("welcome_message", None)  # dashboard template; WELCOME_MESSAGE env wins live if set
+
+    # ---- leveling ----
+    # text-message XP with a per-user cooldown (see cogs/leveling.py),
+    # level-up announcements, and optional role rewards per level.
+    g.setdefault("leveling_enabled", True)
+    g.setdefault("level_channel_id", _env_int("LEVEL_CHANNEL_ID"))
+    g.setdefault("level_message", None)  # dashboard template; LEVEL_UP_MESSAGE env wins live if set
+    g.setdefault("level_roles", {})  # {"<level>": role_id} - awarded (stacking, never removed) on level-up
 
     # ---- logging (message / mod / report / withdraw / deposit / ticket) ----
     for log_type, env_var in LOG_TYPES.items():

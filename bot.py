@@ -663,7 +663,7 @@ async def on_ready():
 # kept out of this file on purpose - this file is already huge, and the
 # gambling logic above shouldn't have to be scrolled past to find/edit the
 # mod, ticket, report, or logging commands.
-for _ext in ("cogs.moderation", "cogs.tickets", "cogs.reports", "cogs.logging_events"):
+for _ext in ("cogs.moderation", "cogs.tickets", "cogs.reports", "cogs.logging_events", "cogs.leveling", "cogs.welcome"):
     try:
         bot.load_extension(_ext)
         print(f"loaded {_ext}")
@@ -706,8 +706,34 @@ HELP_TEXT = (
     "addchips <user> <amt>, removechips <user> <amt>, banuser <user>, unbanuser <user>, resetuser [user], "
     "forgive <user>, setprefix <prefix>, setannounce <channel>\n\n"
     "**server owner only**\n"
-    "setmanager (pick users/roles or auto-create a 'Casino Staff' role), "
-    "everyone else's games stay normal random, and every toggle is logged)"
+    "setmanager (pick users/roles or auto-create a 'Casino Staff' role), testmode (your own bets always win, "
+    "everyone else's games stay normal random, and every toggle is logged)\n\n"
+    "**moderation** (staff role, set in the dashboard, or admins)\n"
+    "kick <member> [reason], ban <user> [reason] [delete_days], unban <user id>, "
+    "mute <member> <duration> [reason] (timeout, max 28d), unmute <member>, "
+    "warn <member> <reason>, warnings <member>, clearwarnings <member> (manage server), "
+    "purge <amount> [member] (bulk-delete, max 100), slowmode <duration|off> (max 6h), "
+    "lock [reason] / unlock (this channel)\n"
+    "**durations** everywhere above accept a bare number (default unit varies by command), short units "
+    "(10s, 5m, 2h, 3d, 1w, 2mo, 1y), full words (10 seconds, 5 minutes, 2 hours, 3 days, 1 week, 2 months, "
+    "1 year), or combos like 1h30m / '1 week 2 days'\n\n"
+    "**tickets & reports**\n"
+    "ticket-panel (staff - posts the 'open a ticket' panel in this channel), close-ticket (run inside an open "
+    "ticket), add-to-ticket <user> (staff), report <member> <reason> (sends straight to the staff report log)\n\n"
+    "**leveling**\n"
+    "rank [user] - your level, xp progress, and rank; levels - top 10 leaderboard in this server. earned "
+    "automatically by chatting (small cooldown between xp gains so spamming doesn't help). level-up "
+    "announcements, the channel it posts in, the message, and which roles unlock at which level are all set "
+    "in the dashboard's Leveling & Welcome tab\n\n"
+    "**welcome messages**\n"
+    "posted automatically when someone joins - channel and message template are set in the dashboard's "
+    "Leveling & Welcome tab (no command for this, it's just on/off + configured there)\n\n"
+    "**your data**\n"
+    "deletemydata - permanently wipes your own casino account and warning history here, no staff needed\n\n"
+    "**per-game channels**\n"
+    "each casino game listed above under 'games' can be locked to one channel per server - auto-detected by "
+    "matching a channel's name (e.g. #slots), or set explicitly from the dashboard's Game Channels tab, which "
+    "also has a Custom Env box for per-server overrides. ask a manager/admin if a game says to play it elsewhere"
 )
 
 

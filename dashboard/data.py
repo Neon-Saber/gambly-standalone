@@ -10,6 +10,7 @@ personal_econ_file = BASE / "personal_economy.json"
 cfg_file = cfgschema.CFG_FILE
 log_file = BASE / "activity.json"
 settings_file = BASE / "settings.json"
+levels_file = BASE / "levels.json"
 
 DM_ID = "dm"
 

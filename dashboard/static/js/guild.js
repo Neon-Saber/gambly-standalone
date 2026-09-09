@@ -1,7 +1,7 @@
 const GID = document.body.dataset.gid;
 let STATE = null;
 
-const TABS = ['overview', 'players', 'settings', 'moderation', 'bounties', 'activity', 'danger'];
+const TABS = ['overview', 'players', 'settings', 'moderation', 'games', 'leveling', 'bounties', 'activity', 'danger'];
 
 function showTab(name) {
   TABS.forEach((t) => {
@@ -35,6 +35,8 @@ async function init() {
   renderPlayers();
   renderSettings();
   renderModeration();
+  renderGameChannels();
+  renderLeveling();
   renderBounties();
   renderDanger();
 }
@@ -348,6 +350,222 @@ async function renderModeration() {
     const key = row.dataset.log;
     row.querySelector('[data-log-channel]').innerHTML = channelOptions(STATE.logging[key].channel);
   });
+}
+
+// -------------------------------------------------------------- game channels
+async function renderGameChannels() {
+  const el = document.getElementById('tab-games');
+  if (STATE.is_personal) {
+    el.innerHTML = `<div class="empty">Not applicable to the personal/DM ledger.</div>`;
+    return;
+  }
+  const games = STATE.game_list || [];
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h2>Per-game channels</h2>
+        <span class="hint">Leave "Auto-detect" to match a channel by name (e.g. #slots) - pick a channel here to lock it manually instead</span>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Game</th><th>Channel</th></tr></thead>
+        <tbody>${games.map((g) => `
+          <tr data-game="${g}">
+            <td>/${escapeHtml(g)}</td>
+            <td><select data-game-channel style="min-width:200px;"><option value="">Loading channels…</option></select></td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div>
+      <button class="btn btn-gold" id="games-save" style="margin-top:12px;">Save</button>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Custom server env</h2>
+        <span class="hint">Per-server overrides, one KEY=VALUE per line - checked before this server's real .env value for the same key (cog_utils.get_custom_setting)</span>
+      </div>
+      <textarea id="custom-env-box" rows="8" style="width:100%;font-family:monospace;" placeholder="SOME_KEY=some value"></textarea>
+      <button class="btn btn-gold" id="env-save" style="margin-top:12px;">Save</button>
+    </div>`;
+
+  document.getElementById('custom-env-box').value =
+    Object.entries(STATE.custom_env || {}).map(([k, v]) => `${k}=${v}`).join('\n');
+
+  document.getElementById('games-save').addEventListener('click', async () => {
+    const overrides = {};
+    document.querySelectorAll('#tab-games tr[data-game]').forEach((row) => {
+      overrides[row.dataset.game] = row.querySelector('[data-game-channel]').value || null;
+    });
+    const r = await apiPost(`/api/guild/${GID}/game_channels`, { game_channels: overrides });
+    if (r) { toast('Saved.', 'ok'); refresh(); }
+  });
+
+  document.getElementById('env-save').addEventListener('click', async () => {
+    const raw = document.getElementById('custom-env-box').value;
+    const r = await apiPost(`/api/guild/${GID}/custom_env`, { raw });
+    if (r) { toast('Saved.', 'ok'); refresh(); }
+  });
+
+  const channels = await apiGet(`/api/guild/${GID}/channels`);
+  const channelOptions = (selectedId) => channels
+    ? '<option value="">Auto-detect</option>' + channels.text.map((c) =>
+        `<option value="${c.id}" ${String(selectedId) === c.id ? 'selected' : ''}>#${escapeHtml(c.name)}</option>`).join('')
+    : `<option value="">Couldn't load channels — check the bot token</option>`;
+
+  document.querySelectorAll('#tab-games tr[data-game]').forEach((row) => {
+    const g = row.dataset.game;
+    row.querySelector('[data-game-channel]').innerHTML = channelOptions((STATE.game_channels || {})[g]);
+  });
+}
+
+// -------------------------------------------------------- leveling & welcome
+async function renderLeveling() {
+  const el = document.getElementById('tab-leveling');
+  if (STATE.is_personal) {
+    el.innerHTML = `<div class="empty">Not applicable to the personal/DM ledger.</div>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-head"><h2>Welcome messages</h2></div>
+      <div class="switch-row" style="margin-bottom:16px;">
+        <label class="switch"><input type="checkbox" id="w-enabled" ${STATE.welcome_enabled ? 'checked' : ''}><span class="track"></span></label>
+        <span class="lbl">Post a welcome embed when someone joins</span>
+      </div>
+      <div class="field-grid">
+        <div class="field">
+          <label>Welcome channel</label>
+          <select id="w-channel"><option value="">Loading channels…</option></select>
+        </div>
+      </div>
+      <div class="field" style="margin-top:12px;">
+        <label>Message template</label>
+        <textarea id="w-message" rows="3" style="width:100%;" placeholder="${escapeHtml('welcome {user} to **{server}**! you\'re member #{membercount} 🎉')}">${escapeHtml(STATE.welcome_message || '')}</textarea>
+        <span class="desc">Placeholders: {user} (mention), {username}, {server}, {membercount}. Leave blank to use the built-in default. Setting WELCOME_MESSAGE in this server's .env always overrides whatever's saved here.</span>
+      </div>
+      <button class="btn btn-gold" id="w-save" style="margin-top:12px;">Save</button>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Leveling</h2></div>
+      <div class="switch-row" style="margin-bottom:16px;">
+        <label class="switch"><input type="checkbox" id="l-enabled" ${STATE.leveling_enabled ? 'checked' : ''}><span class="track"></span></label>
+        <span class="lbl">Award XP for chatting and announce level-ups</span>
+      </div>
+      <div class="field-grid">
+        <div class="field">
+          <label>Level-up announce channel</label>
+          <select id="l-channel"><option value="">Loading channels…</option></select>
+        </div>
+      </div>
+      <div class="field" style="margin-top:12px;">
+        <label>Level-up message template</label>
+        <textarea id="l-message" rows="2" style="width:100%;" placeholder="${escapeHtml('🎉 {user} just reached **level {level}**!')}">${escapeHtml(STATE.level_message || '')}</textarea>
+        <span class="desc">Placeholders: {user}, {username}, {server}, {level}. Leave blank for the built-in default. Setting LEVEL_UP_MESSAGE in this server's .env always overrides whatever's saved here.</span>
+      </div>
+      <button class="btn btn-gold" id="l-save" style="margin-top:12px;">Save</button>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Level roles</h2>
+        <span class="hint">Roles stack - hitting a level grants every role at or below it that the member doesn't already have</span>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Level</th><th>Role</th><th></th></tr></thead>
+        <tbody id="lr-rows"></tbody>
+      </table></div>
+      <button class="btn btn-sm btn-ghost" id="lr-add" style="margin-top:8px;">+ Add level</button>
+      <button class="btn btn-gold" id="lr-save" style="margin-top:12px;">Save</button>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Leaderboard preview</h2></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Player</th><th>Level</th><th>Total XP</th></tr></thead>
+        <tbody id="lvl-board"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+      </table></div>
+    </div>`;
+
+  const [channels, roles, board] = await Promise.all([
+    apiGet(`/api/guild/${GID}/channels`),
+    apiGet(`/api/guild/${GID}/roles`),
+    apiGet(`/api/guild/${GID}/level_leaderboard`),
+  ]);
+
+  const channelOptions = (selectedId) => channels
+    ? '<option value="">None</option>' + channels.text.map((c) =>
+        `<option value="${c.id}" ${String(selectedId) === c.id ? 'selected' : ''}>#${escapeHtml(c.name)}</option>`).join('')
+    : `<option value="">Couldn't load channels — check the bot token</option>`;
+  const roleOptions = (selectedId) => roles
+    ? '<option value="">Pick a role…</option>' + roles.map((r) =>
+        `<option value="${r.id}" ${String(selectedId) === r.id ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')
+    : `<option value="">Couldn't load roles — check the bot token</option>`;
+
+  document.getElementById('w-channel').innerHTML = channelOptions(STATE.welcome_channel_id);
+  document.getElementById('l-channel').innerHTML = channelOptions(STATE.level_channel_id);
+
+  document.getElementById('w-save').addEventListener('click', async () => {
+    const r = await apiPost(`/api/guild/${GID}/welcome_config`, {
+      welcome_enabled: document.getElementById('w-enabled').checked,
+      welcome_channel_id: document.getElementById('w-channel').value || null,
+      welcome_message: document.getElementById('w-message').value,
+    });
+    if (r) { toast('Saved.', 'ok'); refresh(); }
+  });
+
+  document.getElementById('l-save').addEventListener('click', async () => {
+    const r = await apiPost(`/api/guild/${GID}/leveling_config`, {
+      leveling_enabled: document.getElementById('l-enabled').checked,
+      level_channel_id: document.getElementById('l-channel').value || null,
+      level_message: document.getElementById('l-message').value,
+    });
+    if (r) { toast('Saved.', 'ok'); refresh(); }
+  });
+
+  // ---- level roles table ----
+  const rowsEl = document.getElementById('lr-rows');
+  const addRow = (level, roleId) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="number" min="0" class="lr-level" value="${level ?? ''}" style="width:80px;"></td>
+      <td><select class="lr-role">${roleOptions(roleId)}</select></td>
+      <td><button class="btn btn-sm btn-danger lr-remove">Remove</button></td>`;
+    tr.querySelector('.lr-remove').addEventListener('click', () => tr.remove());
+    rowsEl.appendChild(tr);
+  };
+  const existing = Object.entries(STATE.level_roles || {}).sort((a, b) => Number(a[0]) - Number(b[0]));
+  if (existing.length) {
+    existing.forEach(([lvl, roleId]) => addRow(lvl, roleId));
+  } else {
+    rowsEl.innerHTML = `<tr><td colspan="3" class="empty">No level roles set yet.</td></tr>`;
+  }
+  document.getElementById('lr-add').addEventListener('click', () => {
+    if (rowsEl.querySelector('td.empty')) rowsEl.innerHTML = '';
+    addRow('', '');
+  });
+  document.getElementById('lr-save').addEventListener('click', async () => {
+    const level_roles = {};
+    rowsEl.querySelectorAll('tr').forEach((tr) => {
+      const lvlInput = tr.querySelector('.lr-level');
+      const roleSelect = tr.querySelector('.lr-role');
+      if (!lvlInput || !roleSelect) return;
+      const lvl = lvlInput.value.trim();
+      const roleId = roleSelect.value;
+      if (lvl !== '' && roleId) level_roles[lvl] = roleId;
+    });
+    const r = await apiPost(`/api/guild/${GID}/level_roles`, { level_roles });
+    if (r) { toast('Saved.', 'ok'); refresh(); }
+  });
+
+  // ---- leaderboard preview ----
+  const boardEl = document.getElementById('lvl-board');
+  if (board && board.length) {
+    boardEl.innerHTML = board.map((e) =>
+      `<tr><td>${escapeHtml(e.name)}</td><td>${e.level}</td><td>${e.total_xp.toLocaleString()}</td></tr>`
+    ).join('');
+  } else {
+    boardEl.innerHTML = `<tr><td colspan="3" class="empty">Nobody's earned any xp here yet.</td></tr>`;
+  }
 }
 
 // ----------------------------------------------------------------- bounties
