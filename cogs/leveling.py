@@ -22,7 +22,7 @@ from pathlib import Path
 
 import discord
 from discord.ext import commands
-from discord import Option
+from discord import Option, SlashCommandGroup
 
 import config_schema as cfgschema
 import cog_utils as cu
@@ -33,6 +33,8 @@ XP_MIN, XP_MAX = 15, 25
 XP_COOLDOWN = 60  # seconds between XP-earning messages, per user
 
 DEFAULT_LEVEL_MESSAGE = "🎉 {user} just reached **level {level}**!"
+
+_NAME_ALIASES = ["level", "levels", "levelup", "level-up", "rank", "ranks"]
 
 
 def load_levels():
@@ -107,24 +109,33 @@ class Leveling(commands.Cog):
         save_levels(levels)
 
         if leveled_up:
-            await self._announce_level_up(message.guild, message.author, entry["level"], g_cfg)
+            sent, detail = await self._announce_level_up(message.guild, message.author, entry["level"], g_cfg)
+            if not sent:
+                print(f"[leveling] '{message.guild.name}': {detail}")
             await self._grant_level_roles(message.guild, message.author, entry["level"], g_cfg)
 
     async def _announce_level_up(self, guild, member, level, g_cfg):
+        """Resolves the configured channel and posts the level-up embed.
+        Returns (sent: bool, detail: str) so both a real level-up and
+        `!level test` report/log the exact same outcome."""
         channel_id = g_cfg.get("level_channel_id")
-        channel = guild.get_channel(int(channel_id)) if channel_id else None
-        if channel is None:
-            return  # not configured (or the saved channel got deleted) - level still recorded either way
+        if not channel_id:
+            return False, "not configured - level still recorded either way, just nothing to announce to"
+        channel, err = await cu.resolve_channel(guild, channel_id)
+        if err:
+            return False, err
         template = cfgschema.env_first("LEVEL_UP_MESSAGE", g_cfg.get("level_message"), DEFAULT_LEVEL_MESSAGE)
         text = render_template(template, member, guild, level=level)
         embed = discord.Embed(description=text, color=discord.Color.gold(), timestamp=discord.utils.utcnow())
         embed.set_thumbnail(url=member.display_avatar.url)
         try:
             await channel.send(embed=embed)
+            return True, f"sent to {channel.mention}"
         except discord.Forbidden:
-            print(f"[leveling] no permission to post the level-up announcement in '{guild.name}'")
+            return False, (f"no permission to post in {channel.mention} - needs View Channel + "
+                            f"Send Messages + Embed Links")
         except discord.HTTPException as e:
-            print(f"[leveling] failed to post level-up announcement in '{guild.name}': {e}")
+            return False, f"failed to post in {channel.mention}: {e}"
 
     async def _grant_level_roles(self, guild, member, level, g_cfg):
         # stacking rewards: hand out every configured role at or below the
@@ -208,6 +219,49 @@ class Leveling(commands.Cog):
     @commands.command(name="levels", aliases=["levelboard"])
     async def levels_prefix_cmd(self, ctx):
         await self._do_levels(ctx)
+
+    # --------------------------------------------------------------- test --
+    async def _do_test(self, ctx):
+        guild = ctx.guild
+        if guild is None:
+            return await cu.respond(ctx, "server only", ephemeral=True)
+        all_cfg = cfgschema.load_cfg()
+        g_cfg = cfgschema.ensure_guild(all_cfg, guild.id, guild.name)
+
+        changed = False
+        if not g_cfg.get("level_channel_id"):
+            _, changed = cu.resolve_named_channel(guild, g_cfg, "level_channel_id", _NAME_ALIASES)
+        if changed:
+            cfgschema.save_cfg(all_cfg)
+
+        if not g_cfg.get("leveling_enabled", True):
+            return await cu.respond(
+                ctx, "⏸️ leveling is disabled for this server - turn it on in the dashboard's "
+                     "**Leveling & Welcome** tab first", ephemeral=True)
+
+        levels = load_levels()
+        current_level = levels.get(str(guild.id), {}).get(str(ctx.author.id), {}).get("level", 0)
+        sent, detail = await self._announce_level_up(guild, ctx.author, current_level + 1, g_cfg)
+        prefix = "✅" if sent else "❌"
+        note = " (auto-detected a channel by name and saved it)" if changed else ""
+        await cu.respond(ctx, f"{prefix} {detail}{note}", ephemeral=True)
+
+    level_group = SlashCommandGroup("level", "leveling settings")
+
+    @level_group.command(name="test", description="send a preview level-up embed for yourself")
+    @cu.staff_check()
+    async def level_test_slash(self, ctx):
+        await cu.maybe_defer(ctx, ephemeral=True)
+        await self._do_test(ctx)
+
+    @commands.group(name="level", invoke_without_command=True)
+    async def level_prefix(self, ctx):
+        await cu.respond(ctx, "usage: `!level test` - sends a preview level-up embed for yourself")
+
+    @level_prefix.command(name="test")
+    @cu.staff_check()
+    async def level_test_prefix(self, ctx):
+        await self._do_test(ctx)
 
 
 def setup(bot):

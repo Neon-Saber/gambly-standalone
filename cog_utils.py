@@ -149,6 +149,65 @@ def resolve_game_channel(guild, g_cfg, cmd_name):
     return None, False
 
 
+def resolve_named_channel(guild, g_cfg, id_key, name_aliases, kind="text"):
+    """Same auto-detect-by-name-then-cache trick as resolve_game_channel
+    above, generalized for the single-purpose channels (welcome, level-up,
+    member-count) that aren't tied to one specific command. Returns
+    (channel_id_str_or_None, cfg_was_changed) - caller saves config.json
+    when changed is True, same contract as resolve_game_channel."""
+    existing = g_cfg.get(id_key)
+    if existing:
+        return existing, False
+    if guild is None:
+        return None, False
+    channels = guild.voice_channels if kind == "voice" else guild.text_channels
+    for ch in channels:
+        cname = ch.name.lower().replace("_", "-")
+        if any(alias in cname for alias in name_aliases):
+            g_cfg[id_key] = str(ch.id)
+            return str(ch.id), True
+    return None, False
+
+
+async def resolve_channel(guild, channel_id):
+    """Resolve a stored channel-id string to a live discord channel,
+    trying the cache first and falling back to a real API fetch (a
+    channel made very recently, or the cache just not being warm yet,
+    would otherwise silently look like it doesn't exist). Returns
+    (channel, error_message) - exactly one of the two is None. Shared by
+    every feature that posts to a dashboard-configured channel so the
+    fetch-fallback + error wording is only written once."""
+    if not channel_id:
+        return None, "no channel is configured"
+    channel = guild.get_channel(int(channel_id))
+    if channel is not None:
+        return channel, None
+    try:
+        channel = await guild.fetch_channel(int(channel_id))
+        return channel, None
+    except (discord.NotFound, discord.Forbidden) as e:
+        return None, f"channel `{channel_id}` doesn't exist or the bot can't see it ({e})"
+    except discord.HTTPException as e:
+        return None, f"couldn't resolve channel `{channel_id}` ({e})"
+
+
+def staff_check():
+    """Reusable version of cogs/moderation.py's own staff_check() - lets
+    anyone with this server's configured staff role (plus server
+    Administrators, always) use a command. Imported locally to avoid a
+    circular import at module load time."""
+    from discord.ext import commands
+    import logging_utils
+
+    async def predicate(ctx):
+        if not isinstance(ctx.author, discord.Member):
+            return False
+        if logging_utils.is_staff(ctx.author):
+            return True
+        raise commands.MissingPermissions(["manage_guild"])
+    return commands.check(predicate)
+
+
 # -------------------------------------------------------------- custom env --
 def get_custom_setting(g_cfg, key, default=None):
     """A per-guild override editable straight from the dashboard's Custom

@@ -1,4 +1,4 @@
-import json, os, random, time, asyncio
+import json, os, random, time, asyncio, traceback
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -735,7 +735,7 @@ async def on_ready():
 # kept out of this file on purpose - this file is already huge, and the
 # gambling logic above shouldn't have to be scrolled past to find/edit the
 # mod, ticket, report, or logging commands.
-for _ext in ("cogs.moderation", "cogs.tickets", "cogs.reports", "cogs.logging_events", "cogs.leveling", "cogs.welcome", "cogs.server_stats"):
+for _ext in ("cogs.moderation", "cogs.tickets", "cogs.reports", "cogs.logging_events", "cogs.leveling", "cogs.welcome", "cogs.server_stats", "cogs.diagnostics"):
     try:
         bot.load_extension(_ext)
         print(f"loaded {_ext}")
@@ -793,17 +793,23 @@ HELP_TEXT = (
     "ticket-panel (staff - posts the 'open a ticket' panel in this channel), close-ticket (run inside an open "
     "ticket), add-to-ticket <user> (staff), report <member> <reason> (sends straight to the staff report log)\n\n"
     "**leveling**\n"
-    "rank [user] - your level, xp progress, and rank; levels - top 10 leaderboard in this server. earned "
+    "rank [user] - your level, xp progress, and rank; levels - top 10 leaderboard in this server; "
+    "level test (staff) - sends a preview level-up embed for yourself, using the real channel/template. earned "
     "automatically by chatting (small cooldown between xp gains so spamming doesn't help). level-up "
     "announcements, the channel it posts in, the message, and which roles unlock at which level are all set "
     "in the dashboard's Leveling & Welcome tab\n\n"
     "**welcome messages**\n"
     "posted automatically when someone joins - channel and message template are set in the dashboard's "
-    "Leveling & Welcome tab (no command for this, it's just on/off + configured there)\n\n"
+    "Leveling & Welcome tab. welcome test (staff) - sends a preview welcome embed for yourself, using the "
+    "real channel/template\n\n"
     "**member count**\n"
     "a voice channel can auto-rename itself to show the live non-bot member count (e.g. 'Members: 42') - "
     "toggle, channel, and name template are in the dashboard's Leveling & Welcome tab. updates on join/leave "
     "(rate-limit permitting) and every 10 minutes regardless\n\n"
+    "**diagnostics** (staff)\n"
+    "diag / diagnostics / healthcheck - checks welcome/leveling/member-count/logging/tickets/staff-role "
+    "config, storage connectivity, and cog load status all at once, and auto-fills a missing welcome/level/"
+    "member-count channel by name match if it finds an obvious one\n\n"
     "**your data**\n"
     "deletemydata - permanently wipes your own casino account and warning history here, no staff needed\n\n"
     "**per-game channels**\n"
@@ -3514,7 +3520,10 @@ async def on_application_command_error(ctx, error):
         return
     if isinstance(error, GameChannelLocked):
         return  # already told them which channel to use - nothing more to say
-    print(error)
+    # print(error) alone only shows the one-line summary ("Command raised an
+    # exception: TypeError: ...") - not WHERE it happened. Full traceback so
+    # the actual bug is findable from the console instead of guessing.
+    traceback.print_exception(type(error), error, error.__traceback__)
     try:
         await ctx.respond("something broke, check console", ephemeral=True)
     except discord.InteractionResponded:
@@ -3533,7 +3542,7 @@ async def on_command_error(ctx, error):
         return
     if isinstance(error, commands.CommandNotFound):
         return  # dont spam chat every time someone types a normal message that starts with the prefix char
-    print(error)
+    traceback.print_exception(type(error), error, error.__traceback__)
     await ctx.send("something broke, check console")
 
 
