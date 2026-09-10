@@ -485,12 +485,23 @@ def is_banned(member, space):
 
 # helper so i dont have to write ctx.respond vs ctx.send branches everywhere,
 # slash commands use ApplicationContext (.respond), prefix commands use
-# regular Context (.send). both take content/embed/view so this just picks the right one
-async def reply(ctx, content=None, embed=None, view=None, ephemeral=False):
+# regular Context (.send). both take content/embed/view so this just picks the right one.
+#
+# `embeds` (plural) is for when a single embed would blow past Discord's
+# 4096-char description cap (see chunk_help_text/HELP_TEXT below) - pass a
+# list of embeds instead of a single `embed`. only one of embed/embeds should
+# be given at a time.
+async def reply(ctx, content=None, embed=None, embeds=None, view=None, ephemeral=False):
     if hasattr(ctx, "respond"):
-        await ctx.respond(content=content, embed=embed, view=view, ephemeral=ephemeral)
+        if embeds is not None:
+            await ctx.respond(content=content, embeds=embeds, view=view, ephemeral=ephemeral)
+        else:
+            await ctx.respond(content=content, embed=embed, view=view, ephemeral=ephemeral)
     else:
-        await ctx.send(content=content, embed=embed, view=view)
+        if embeds is not None:
+            await ctx.send(content=content, embeds=embeds, view=view)
+        else:
+            await ctx.send(content=content, embed=embed, view=view)
 
 
 def need_guild(ctx):
@@ -819,14 +830,46 @@ HELP_TEXT = (
 )
 
 
+def chunk_help_text(text, limit=4000):
+    """Splits HELP_TEXT on its '\\n\\n' section breaks and packs sections
+    into chunks that stay under Discord's 4096-char embed description cap
+    (4000 used instead of 4096 to leave a little headroom). Keeps whole
+    sections together instead of hard-cutting mid-sentence."""
+    sections = text.split("\n\n")
+    chunks = []
+    current = ""
+    for section in sections:
+        candidate = f"{current}\n\n{section}" if current else section
+        if len(candidate) > limit and current:
+            chunks.append(current)
+            current = section
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def build_help_embeds():
+    chunks = chunk_help_text(HELP_TEXT)
+    return [
+        discord.Embed(
+            title="commands" if i == 0 else None,
+            description=chunk,
+            color=discord.Color.blurple(),
+        )
+        for i, chunk in enumerate(chunks)
+    ]
+
+
 @bot.slash_command(name="help", description="list of everything this bot can do")
 async def help_slash(ctx):
-    await reply(ctx, embed=discord.Embed(title="commands", description=HELP_TEXT, color=discord.Color.blurple()))
+    await reply(ctx, embeds=build_help_embeds())
 
 
 @bot.command(name="help")
 async def help_cmd(ctx):
-    await reply(ctx, embed=discord.Embed(title="commands", description=HELP_TEXT, color=discord.Color.blurple()))
+    await reply(ctx, embeds=build_help_embeds())
 
 
 # ================= ECONOMY =================
