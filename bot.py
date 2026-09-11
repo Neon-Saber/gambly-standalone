@@ -61,6 +61,67 @@ LOAN_MAX = starting_bal * 2
 LOAN_INTEREST = 0.20
 LOAN_TERM = 86400  # 24h to pay it back before the house comes collecting
 BANK_INTEREST = 0.02  # small daily interest on whatever's sitting in the bank
+
+# rebirth - a prestige reset. once your bal+bank clears the requirement you
+# can cash it all in to permanently boost your earnings AND your luck (both
+# grow with every rebirth, no cap), unlock higher business tiers and rarer
+# shop items, and start climbing again from a clean slate. rebirths reset
+# EVERYTHING economy-side (bal, bank, loan, business, investments, upgrades,
+# shop inventory, streaks) - only your badge case and the rebirth count
+# itself survive. requirement grows each time so it stays a real milestone.
+REBIRTH_BASE_REQUIREMENT = 10_000
+REBIRTH_GROWTH = 2.2  # each rebirth needs this much more net worth than the last
+REBIRTH_MULT_PER = 0.5  # +50% to /work, /crime, and /collect earnings per rebirth (1.5x, 2x, 2.5x, ...)
+REBIRTH_LUCK_PER = 0.0105  # +1.05 percentage points of success chance per rebirth on /crime, /rob, /beg
+REBIRTH_LUCK_CAP = 0.35  # hard ceiling so luck alone can never make those a sure thing
+REBIRTH_MAX = 7  # hard cap - at 7 that's a 4.5x earnings multiplier and +7.35% luck, kept intentionally modest
+
+
+def rebirth_requirement(count):
+    return int(REBIRTH_BASE_REQUIREMENT * (REBIRTH_GROWTH ** count))
+
+
+def rebirth_mult(a):
+    return 1 + REBIRTH_MULT_PER * a.get("rebirths", 0)
+
+
+def rebirth_luck(a):
+    return min(REBIRTH_LUCK_CAP, REBIRTH_LUCK_PER * a.get("rebirths", 0))
+
+
+# business tiers / shop items / upgrades that only unlock once you've
+# rebirthed enough times - the "more content the more you rebirth" hook.
+# anything not listed here has no rebirth requirement (0).
+BUSINESS_REBIRTH_REQ = {"empire": 1, "conglomerate": 2, "syndicate": 3, "monopoly": 4, "cartel": 5}
+SHOP_REBIRTH_REQ = {"platinum_shield": 1, "midas_touch": 2}
+UPGRADE_REBIRTH_REQ = {"empire_visionary": 1}
+
+
+async def grant_rebirth_roles(guild, member, rebirths, g_cfg):
+    # stacking rewards, same pattern as leveling's role grants: hand out
+    # every configured role at or below the rebirth count just reached that
+    # the member doesn't already have. never removes anything.
+    rebirth_roles = g_cfg.get("rebirth_roles", {})
+    if not rebirth_roles:
+        return
+    to_add = []
+    for cnt_str, role_id in rebirth_roles.items():
+        try:
+            if int(cnt_str) > rebirths:
+                continue
+        except (TypeError, ValueError):
+            continue
+        role = guild.get_role(int(role_id)) if role_id else None
+        if role and role not in member.roles:
+            to_add.append(role)
+    if to_add:
+        try:
+            await member.add_roles(*to_add, reason=f"reached {rebirths} rebirth(s)")
+        except discord.Forbidden:
+            print(f"[rebirth] missing permission to grant rebirth roles in '{guild.name}' - "
+                  f"check the bot's role position and Manage Roles permission")
+
+
 SHOP = {
     "shield": {"price": 300, "desc": "blocks /rob against you for 24h per use"},
     "charm": {"price": 200, "desc": "doubles your next /daily per use"},
@@ -68,6 +129,18 @@ SHOP = {
     "vault": {"price": 0, "desc": "craft from 3 shields - 48h rob block + half loan interest (can't be bought directly)"},
     "lockpick": {"price": 250, "desc": "guarantees your next /rob succeeds (a shield on the target still blocks it)"},
     "energy_drink": {"price": 150, "desc": "instantly resets your /work and /crime cooldowns"},
+    "stopwatch": {"price": 200, "desc": "instantly resets your /rob cooldown"},
+    "fake_id": {"price": 300, "desc": "if your next /crime gets caught, you dodge the fine, one use"},
+    "getaway_bike": {"price": 350, "desc": "if your next /rob attempt gets caught, you dodge the fine, one use"},
+    "four_leaf_clover": {"price": 550, "desc": "your next /work or /crime payout is boosted 50%, one use"},
+    "piggy_bank": {"price": 450, "desc": "doubles bank interest on your next /daily claim, one use"},
+    "platinum_shield": {"price": 900, "desc": "blocks /rob against you for 72h per use (unlocks at 1 rebirth)"},
+    "midas_touch": {"price": 3000, "desc": "doubles your next /work, /crime, or /collect payout, one use (unlocks at 2 rebirths)"},
+    "steel_vault": {"price": 1200, "desc": "blocks /rob against you for 7 days per use"},
+    "lucky_dice": {"price": 400, "desc": "guarantees your next /crime succeeds, one use"},
+    "overtime_pass": {"price": 550, "desc": "your next /collect ignores the 24h accrual cap, one use"},
+    "night_vision": {"price": 350, "desc": "reveals the target's balance in the result of your next /rob, one use"},
+    "debt_relief": {"price": 700, "desc": "cuts your current loan's owed amount by 25%, one use"},
 }
 
 # permanent one-time upgrades - bought separately from the consumable SHOP
@@ -75,6 +148,12 @@ SHOP = {
 UPGRADES = {
     "briefcase": {"price": 800, "desc": "+25% chips from every /work, forever"},
     "resume": {"price": 1200, "desc": "cuts your /work cooldown by 15 minutes, forever"},
+    "silver_tongue": {"price": 1500, "desc": "+20% chips from every /crime, forever"},
+    "thick_skin": {"price": 1000, "desc": "cuts every /crime fine in half, forever"},
+    "getaway_car": {"price": 2200, "desc": "cuts your /rob cooldown by 45 minutes, forever"},
+    "loyalty_card": {"price": 1800, "desc": "your /daily bank interest rate is doubled, forever"},
+    "loan_shark_friend": {"price": 2500, "desc": "cuts your /loan interest rate in half, forever (stacks with vault)"},
+    "empire_visionary": {"price": 6000, "desc": "+15% chips from every /collect, forever (unlocks at 1 rebirth)"},
 }
 
 # passive-income businesses - buy a tier, income builds up hourly whether
@@ -84,13 +163,43 @@ BUSINESS_TIERS = {
     "stand": {"price": 500, "hourly": 15, "label": "Lemonade Stand"},
     "shop": {"price": 2500, "hourly": 60, "label": "Chip Shop"},
     "casino": {"price": 10000, "hourly": 300, "label": "Mini Casino"},
+    "empire": {"price": 40000, "hourly": 1000, "label": "Chip Empire"},
+    "conglomerate": {"price": 150000, "hourly": 3500, "label": "Global Conglomerate"},
+    "syndicate": {"price": 350000, "hourly": 10000, "label": "Chip Syndicate"},
+    "monopoly": {"price": 900000, "hourly": 25000, "label": "Chip Monopoly"},
+    "cartel": {"price": 2200000, "hourly": 58000, "label": "Continental Cartel"},
 }
-BUSINESS_ORDER = ["stand", "shop", "casino"]
+BUSINESS_ORDER = ["stand", "shop", "casino", "empire", "conglomerate", "syndicate", "monopoly", "cartel"]
 BUSINESS_CAP_HOURS = 24  # income stops piling up after this long uncollected
 
 GAME_COMMANDS = {"coinflip", "slots", "dice", "roulette", "blackjack", "allin", "war", "hilo", "crash", "mines",
                   "plinko", "horserace", "poker", "wheel", "keno", "baccarat", "rps", "ladder"}
 HOLIDAY_SYMS = {"🎄": 40, "🎁": 25, "⛄": 15, "🦌": 10, "🔔": 5, "⭐": 2}
+
+
+# ---------------- shorthand amount parsing for prefix (!) commands ----------------
+# slash commands get Discord's native number input, but prefix commands are
+# just plain text - so !bet 15k / !deposit 1.5m / !give @user 2b all work the
+# same as typing the full number out. Slash command options are untouched
+# (they stay plain ints - Discord already gives those a proper number field).
+class Amount(commands.Converter):
+    SUFFIXES = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+
+    async def convert(self, ctx, argument):
+        raw = argument.strip().lower().replace(",", "").replace("_", "").replace(" ", "")
+        if not raw:
+            raise commands.BadArgument("give me an amount, like `250`, `15k`, or `1.5m`")
+        mult = self.SUFFIXES.get(raw[-1])
+        num_part = raw[:-1] if mult else raw
+        mult = mult or 1
+        try:
+            value = float(num_part)
+        except ValueError:
+            raise commands.BadArgument(f"`{argument}` isn't a valid amount - try `250`, `15k`, `1.5m`, or `1b`")
+        value = int(value * mult)
+        if value <= 0:
+            raise commands.BadArgument("amount has to be a positive number")
+        return value
 
 
 # ---------------- runtime-tunable settings, editable from the admin panel ----------------
@@ -323,7 +432,12 @@ def new_acct(name):
         "name": name, "bal": get_setting("starting_bal", starting_bal), "bank": 0,
         "last_daily": 0, "last_work": 0, "last_rob": 0, "last_crime": 0, "last_beg": 0,
         "loan": None, "shield_until": 0, "charm": False, "insurance": False, "lockpick": False,
-        "inv": {"shield": 0, "charm": 0, "vault": 0, "insurance": 0, "lockpick": 0, "energy_drink": 0},
+        "fake_id": False, "getaway_bike": False, "clover": False, "piggy_bank": False, "midas": False,
+        "lucky_dice": False, "overtime_pass": False, "night_vision": False,
+        "inv": {"shield": 0, "charm": 0, "vault": 0, "insurance": 0, "lockpick": 0, "energy_drink": 0,
+                "stopwatch": 0, "fake_id": 0, "getaway_bike": 0, "four_leaf_clover": 0, "piggy_bank": 0,
+                "platinum_shield": 0, "midas_touch": 0, "steel_vault": 0, "lucky_dice": 0,
+                "overtime_pass": 0, "night_vision": 0, "debt_relief": 0},
         "vault_interest_until": 0,
         "investments": [],
         "badges": [],
@@ -331,6 +445,7 @@ def new_acct(name):
         "win_streak": 0,
         "business": None,
         "upgrades": {},
+        "rebirths": 0,
     }
 
 
@@ -406,10 +521,30 @@ def acct(econ, guild, member):
         u.setdefault("charm", False)
         u.setdefault("insurance", False)
         u.setdefault("lockpick", False)
+        u.setdefault("fake_id", False)
+        u.setdefault("getaway_bike", False)
+        u.setdefault("clover", False)
+        u.setdefault("piggy_bank", False)
+        u.setdefault("midas", False)
+        u.setdefault("lucky_dice", False)
+        u.setdefault("overtime_pass", False)
+        u.setdefault("night_vision", False)
         u.setdefault("inv", {"shield": 0, "charm": 0, "vault": 0, "insurance": 0, "lockpick": 0, "energy_drink": 0})
         u["inv"].setdefault("insurance", 0)
         u["inv"].setdefault("lockpick", 0)
         u["inv"].setdefault("energy_drink", 0)
+        u["inv"].setdefault("stopwatch", 0)
+        u["inv"].setdefault("fake_id", 0)
+        u["inv"].setdefault("getaway_bike", 0)
+        u["inv"].setdefault("four_leaf_clover", 0)
+        u["inv"].setdefault("piggy_bank", 0)
+        u["inv"].setdefault("platinum_shield", 0)
+        u["inv"].setdefault("midas_touch", 0)
+        u["inv"].setdefault("steel_vault", 0)
+        u["inv"].setdefault("lucky_dice", 0)
+        u["inv"].setdefault("overtime_pass", 0)
+        u["inv"].setdefault("night_vision", 0)
+        u["inv"].setdefault("debt_relief", 0)
         u.setdefault("vault_interest_until", 0)
         u.setdefault("investments", [])
         u.setdefault("badges", [])
@@ -417,6 +552,7 @@ def acct(econ, guild, member):
         u.setdefault("upgrades", {})
         u.setdefault("daily_streak", 0)
         u.setdefault("win_streak", 0)
+        u.setdefault("rebirths", 0)
         check_loan(u, g["name"])
         check_investments(u, g["name"])
         if u["bal"] + u["bank"] >= 10000:
@@ -762,7 +898,8 @@ HELP_TEXT = (
     "you between DMs. anything needing another real player or a server-wide view (give, rob, duel, "
     "bounty, leaderboard, lottery, manager tools) is server-only. slash commands also work in servers "
     "this bot was never added to, if you've installed it as an app - prefix (!) commands only work in "
-    "servers the bot is actually a member of.\n\n"
+    "servers the bot is actually a member of. prefix (!) command amounts accept shorthand too - "
+    "`!deposit 15k`, `!bet 1.5m`, `!give @user 2b` all work the same as typing the full number.\n\n"
     "**economy**\n"
     "balance [user], daily (streak bonus up to +45%), work, crime (riskier, bigger payout), "
     "beg (tiny, no risk), give <user> <amt>, rob <user>, "
@@ -772,11 +909,24 @@ HELP_TEXT = (
     "loan <amt> (20% interest, 24h to pay back, defaulted debt grows 5%/day), repay <amt>, debtors\n\n"
     "**passive income & upgrades**\n"
     "business, buybusiness <tier>, collect - own a business, income builds up hourly, claim anytime\n"
-    "upgrades, buyupgrade <name> - permanent one-time boosts (bigger /work payouts, shorter cooldown)\n\n"
+    "upgrades, buyupgrade <name> - permanent one-time boosts (bigger /work or /crime payouts, "
+    "shorter /work or /rob cooldowns, cheaper crime/rob fines, better bank interest, cheaper loans)\n\n"
     "**shop**\n"
     "shop, buy <item>, pawn <item> (sell back for 50%) - shield blocks rob, charm doubles daily, "
     "insurance blocks the next successful rob against you, lockpick guarantees your next rob, "
-    "energy_drink resets /work and /crime cooldowns\n\n"
+    "energy_drink resets /work and /crime cooldowns, stopwatch resets /rob cooldown, "
+    "fake_id/getaway_bike dodge your next crime/rob fine, four_leaf_clover boosts your next work/crime "
+    "payout 50%, piggy_bank doubles your next daily bank interest, steel_vault blocks rob for 7 days, "
+    "lucky_dice guarantees your next crime, overtime_pass lifts the /collect cap for one claim, "
+    "night_vision reveals your rob target's balance, debt_relief cuts your loan by 25%, "
+    "platinum_shield/midas_touch unlock via /rebirth\n\n"
+    "**rebirth**\n"
+    "rebirth (up to 7 times) - once your bal+bank hits the requirement (10k the first time, then it "
+    "grows), cash it all in: everything economy-side resets to a clean slate, but you permanently keep "
+    "a growing earnings multiplier (+50% per rebirth on /work, /crime, /collect) and a growing luck "
+    "bonus (+1.05% success chance per rebirth on /crime, /rob, /beg), capped at 7 rebirths so it never "
+    "gets out of hand. also unlocks higher business tiers and rarer shop/upgrade items the more times "
+    "you've done it. badges carry over, everything else doesn't\n\n"
     "**games**\n"
     "coinflip <amt> <heads/tails>, slots <amt> (feeds a growing jackpot), jackpot, dice <amt> <1-6>, "
     "roulette <amt> <red/black/green/number>, blackjack <amt> (Hit/Stand/Double Down), allin <red/black>, "
@@ -929,10 +1079,22 @@ async def do_daily(ctx):
     interest_note = ""
     if a["bank"] > 0:
         rate = get_setting("bank_interest", BANK_INTEREST)
+        if a["upgrades"].get("loyalty_card"):
+            rate *= 2
+        piggy = a.get("piggy_bank")
+        if piggy:
+            rate *= 2
+            a["piggy_bank"] = False
         interest = int(a["bank"] * rate)
         if interest > 0:
             a["bank"] += interest
-            interest_note = f"\nbank also earned {chips(interest)} interest"
+            note_bits = []
+            if a["upgrades"].get("loyalty_card"):
+                note_bits.append("loyalty card")
+            if piggy:
+                note_bits.append("piggy bank")
+            bonus = f" ({' + '.join(note_bits)} bonus)" if note_bits else ""
+            interest_note = f"\nbank also earned {chips(interest)} interest{bonus}"
     save(econ, econ_file_for(space))
     await reply(ctx, content=f"+{chips(amt)}{extra}{streak_note}, now at {chips(a['bal'])}{interest_note}")
 
@@ -962,6 +1124,17 @@ async def do_work(ctx):
     if a["upgrades"].get("briefcase"):
         earned = int(earned * 1.25)
         briefcase_note = " (briefcase bonus)"
+    if a.get("clover"):
+        earned = int(earned * 1.5)
+        a["clover"] = False
+        briefcase_note += " (clover bonus)"
+    if a.get("rebirths"):
+        earned = int(earned * rebirth_mult(a))
+        briefcase_note += f" (rebirth x{a['rebirths']} bonus)"
+    if a.get("midas"):
+        earned *= 2
+        a["midas"] = False
+        briefcase_note += " (midas touch, doubled!)"
     a["bal"] += earned
     a["last_work"] = time.time()
     save(econ, econ_file_for(space))
@@ -989,15 +1162,39 @@ async def do_crime(ctx):
         await reply(ctx, content=f"lay low for {m}m before pulling something else", ephemeral=True)
         return
     a["last_crime"] = time.time()
-    if random.random() < 0.6:
+    used_dice = bool(a.get("lucky_dice"))
+    if used_dice:
+        a["lucky_dice"] = False
+    if used_dice or random.random() < (0.6 + rebirth_luck(a)):
         earned = random.randint(200, 500)
+        note = ""
+        if a["upgrades"].get("silver_tongue"):
+            earned = int(earned * 1.2)
+            note += " (silver tongue bonus)"
+        if a.get("clover"):
+            earned = int(earned * 1.5)
+            a["clover"] = False
+            note += " (clover bonus)"
+        if a.get("rebirths"):
+            earned = int(earned * rebirth_mult(a))
+            note += f" (rebirth x{a['rebirths']} bonus)"
+        if a.get("midas"):
+            earned *= 2
+            a["midas"] = False
+            note += " (midas touch, doubled!)"
         a["bal"] += earned
         crimes = ["pickpocketed a tourist", "ran a fake raffle", "hustled some pool", "flipped stolen goods"]
-        await reply(ctx, content=f"you {random.choice(crimes)} and got away with {chips(earned)}. bal: {chips(a['bal'])}")
+        await reply(ctx, content=f"you {random.choice(crimes)} and got away with {chips(earned)}{note}. bal: {chips(a['bal'])}")
     else:
-        fine = max(0, min(random.randint(100, 300), a["bal"]))
-        a["bal"] -= fine
-        await reply(ctx, content=f"got caught red-handed and paid a {chips(fine)} fine. bal: {chips(a['bal'])}")
+        if a.get("fake_id"):
+            a["fake_id"] = False
+            await reply(ctx, content=f"almost got caught but your fake ID got you out of it, no fine. bal: {chips(a['bal'])}")
+        else:
+            fine = max(0, min(random.randint(100, 300), a["bal"]))
+            if a["upgrades"].get("thick_skin"):
+                fine = fine // 2
+            a["bal"] -= fine
+            await reply(ctx, content=f"got caught red-handed and paid a {chips(fine)} fine. bal: {chips(a['bal'])}")
     save(econ, econ_file_for(space))
 
 
@@ -1021,7 +1218,7 @@ async def do_beg(ctx):
         await reply(ctx, content=f"give it a minute, {m}m left before you can beg again", ephemeral=True)
         return
     a["last_beg"] = time.time()
-    if random.random() < 0.1:
+    if random.random() < max(0.0, 0.1 - rebirth_luck(a)):
         save(econ, econ_file_for(space))
         await reply(ctx, content="nobody had any change on them. bal: " + chips(a["bal"]))
         return
@@ -1069,7 +1266,7 @@ async def give(ctx, user: Option(discord.Member, "who to pay"), amount: Option(i
 
 
 @bot.command(name="give", aliases=["pay"])
-async def give_cmd(ctx, user: discord.Member, amount: int):
+async def give_cmd(ctx, user: discord.Member, amount: Amount):
     if amount < 1:
         await reply(ctx, content="amount has to be positive", ephemeral=True)
         return
@@ -1091,7 +1288,8 @@ async def do_rob(ctx, target):
     if t.get("shield_until", 0) > time.time():
         await reply(ctx, content=f"{target.display_name} bought a shield, can't touch them right now", ephemeral=True)
         return
-    left = ROB_WAIT - (time.time() - a["last_rob"])
+    rob_wait = ROB_WAIT - (2700 if a["upgrades"].get("getaway_car") else 0)  # getaway_car upgrade: -45m
+    left = rob_wait - (time.time() - a["last_rob"])
     if left > 0:
         m = int(left / 60)
         await reply(ctx, content=f"lay low for {m}m before trying that again", ephemeral=True)
@@ -1103,7 +1301,11 @@ async def do_rob(ctx, target):
     used_lockpick = bool(a.get("lockpick"))
     if used_lockpick:
         a["lockpick"] = False
-    if used_lockpick or random.random() < 0.4:
+    night_vision_note = ""
+    if a.get("night_vision"):
+        a["night_vision"] = False
+        night_vision_note = f" ({target.display_name} had {chips(t['bal'])} on hand)"
+    if used_lockpick or random.random() < (0.4 + rebirth_luck(a)):
         if t.get("insurance"):
             t["insurance"] = False
             save(econ)
@@ -1125,12 +1327,19 @@ async def do_rob(ctx, target):
             bounty_note = f"\n💰 bounty claimed: +{chips(payout)}"
         lockpick_note = " (lockpick guaranteed it)" if used_lockpick else ""
         save(econ)
-        await reply(ctx, content=f"you robbed {target.mention} for {chips(stolen)}!{lockpick_note} bal: {chips(a['bal'])}{bounty_note}")
+        await reply(ctx, content=f"you robbed {target.mention} for {chips(stolen)}!{lockpick_note} bal: {chips(a['bal'])}{bounty_note}{night_vision_note}")
     else:
+        if a.get("getaway_bike"):
+            a["getaway_bike"] = False
+            save(econ)
+            await reply(ctx, content=f"got spotted trying to rob {target.mention} but sped off on your bike before they could fine you")
+            return
         fine = min(random.randint(75, 200), a["bal"])
+        if a["upgrades"].get("thick_skin"):
+            fine = fine // 2
         a["bal"] -= fine
         save(econ)
-        await reply(ctx, content=f"got caught trying to rob {target.mention} and paid a {chips(fine)} fine")
+        await reply(ctx, content=f"got caught trying to rob {target.mention} and paid a {chips(fine)} fine{night_vision_note}")
 
 
 @bot.slash_command(name="rob", description="try to steal chips off someone, risky")
@@ -1199,7 +1408,7 @@ async def deposit(ctx, amount: Option(int, "how much", min_value=1)):
 
 
 @bot.command(name="deposit", aliases=["dep"])
-async def deposit_cmd(ctx, amount: int):
+async def deposit_cmd(ctx, amount: Amount):
     await do_deposit(ctx, amount)
 
 
@@ -1225,7 +1434,7 @@ async def withdraw(ctx, amount: Option(int, "how much", min_value=1)):
 
 
 @bot.command(name="withdraw", aliases=["wd"])
-async def withdraw_cmd(ctx, amount: int):
+async def withdraw_cmd(ctx, amount: Amount):
     await do_withdraw(ctx, amount)
 
 
@@ -1294,13 +1503,16 @@ async def do_loan(ctx, amount):
     halved = a.get("vault_interest_until", 0) > time.time()
     if halved:
         rate = rate / 2
+    upgrade_halved = bool(a.get("upgrades", {}).get("loan_shark_friend"))
+    if upgrade_halved:
+        rate = rate / 2
     owed = int(amount * (1 + rate))
     a["loan"] = {"owed": owed, "due": time.time() + LOAN_TERM, "defaulted": False}
     a["bal"] += amount
     award(a, "first_loan", "First Loan", space.name)
     save(econ, econ_file_for(space))
     log_event(space.name, f"{ctx.author.display_name} took a loan of {chips(amount)}")
-    note = " (vault halved your rate)" if halved else ""
+    note = " (vault+upgrade halved your rate)" if (halved and upgrade_halved) else (" (vault halved your rate)" if halved else (" (loan shark friend halved your rate)" if upgrade_halved else ""))
     await reply(ctx, content=f"borrowed {chips(amount)}, you owe {chips(owed)} ({int(rate*100)}% interest{note}) within 24h or the house takes it automatically. bal {chips(a['bal'])}")
 
 
@@ -1310,7 +1522,7 @@ async def loan(ctx, amount: Option(int, "how much", min_value=1)):
 
 
 @bot.command(name="loan")
-async def loan_cmd(ctx, amount: int):
+async def loan_cmd(ctx, amount: Amount):
     await do_loan(ctx, amount)
 
 
@@ -1346,7 +1558,7 @@ async def repay(ctx, amount: Option(int, "how much", min_value=1)):
 
 
 @bot.command(name="repay")
-async def repay_cmd(ctx, amount: int):
+async def repay_cmd(ctx, amount: Amount):
     await do_repay(ctx, amount)
 
 
@@ -1414,7 +1626,18 @@ BUYABLE = {k: v for k, v in SHOP.items() if v["price"] > 0}
 
 
 async def do_shop(ctx):
-    lines = [f"**{name}** - {chips(item['price'])} - {item['desc']}" for name, item in BUYABLE.items()]
+    space = get_space(ctx)
+    econ = loadEcon(econ_file_for(space))
+    a = acct(econ, space, ctx.author)
+    save(econ, econ_file_for(space))
+    rebirths = a.get("rebirths", 0)
+    lines = []
+    for name, item in BUYABLE.items():
+        req = SHOP_REBIRTH_REQ.get(name, 0)
+        if req > rebirths:
+            lines.append(f"**{name}** - 🔒 unlocks at {req} rebirth{'s' if req != 1 else ''} - {item['desc']}")
+        else:
+            lines.append(f"**{name}** - {chips(item['price'])} - {item['desc']}")
     lines.append(f"**vault** - craft only (3 shields) - {SHOP['vault']['desc']}")
     await reply(ctx, embed=discord.Embed(
         title="shop",
@@ -1440,6 +1663,10 @@ async def do_buy(ctx, item):
         return
     econ = loadEcon(econ_file_for(space))
     a = acct(econ, space, ctx.author)
+    req = SHOP_REBIRTH_REQ.get(item, 0)
+    if a.get("rebirths", 0) < req:
+        await reply(ctx, content=f"**{item}** unlocks at {req} rebirth{'s' if req != 1 else ''} - you're at {a.get('rebirths', 0)}. check /rebirth", ephemeral=True)
+        return
     price = BUYABLE[item]["price"]
     if a["bal"] < price:
         await reply(ctx, content=f"need {chips(price)}, you have {chips(a['bal'])}", ephemeral=True)
@@ -1493,6 +1720,48 @@ async def do_use(ctx, item):
         a["last_work"] = 0
         a["last_crime"] = 0
         msg = "cooldowns reset - /work and /crime are ready again"
+    elif item == "stopwatch":
+        a["last_rob"] = 0
+        msg = "cooldown reset - /rob is ready again"
+    elif item == "fake_id":
+        a["fake_id"] = True
+        msg = "your next /crime dodges the fine if you get caught"
+    elif item == "getaway_bike":
+        a["getaway_bike"] = True
+        msg = "your next /rob dodges the fine if you get caught"
+    elif item == "four_leaf_clover":
+        a["clover"] = True
+        msg = "your next /work or /crime payout is boosted 50%"
+    elif item == "piggy_bank":
+        a["piggy_bank"] = True
+        msg = "your next /daily bank interest is doubled"
+    elif item == "platinum_shield":
+        a["shield_until"] = time.time() + 259200
+        msg = "shielded for 72h - nobody can /rob you"
+    elif item == "midas_touch":
+        a["midas"] = True
+        msg = "your next /work, /crime, or /collect payout is doubled"
+    elif item == "steel_vault":
+        a["shield_until"] = time.time() + 604800
+        msg = "shielded for 7 days - nobody can /rob you"
+    elif item == "lucky_dice":
+        a["lucky_dice"] = True
+        msg = "your next /crime is guaranteed to succeed"
+    elif item == "overtime_pass":
+        a["overtime_pass"] = True
+        msg = "your next /collect ignores the 24h accrual cap"
+    elif item == "night_vision":
+        a["night_vision"] = True
+        msg = "your next /rob will show you the target's balance in the result"
+    elif item == "debt_relief":
+        if not a.get("loan"):
+            a["inv"][item] += 1  # nothing to relieve, refund it so it isn't wasted
+            save(econ, econ_file_for(space))
+            await reply(ctx, content="you don't have an active loan - saved it for later", ephemeral=True)
+            return
+        cut = int(a["loan"]["owed"] * 0.25)
+        a["loan"]["owed"] -= cut
+        msg = f"your loan's owed amount dropped by {chips(cut)}, now {chips(a['loan']['owed'])}"
     save(econ, econ_file_for(space))
     await reply(ctx, content=f"used a **{item}** - {msg}. {a['inv'][item]} left in inventory")
 
@@ -1575,6 +1844,9 @@ BADGE_LABELS = {
     "whale": "Whale (5k+ single bet)",
     "comeback_kid": "Comeback Kid",
     "win_streak": "On Fire (5-win streak)",
+    "rebirth": "Reborn",
+    "rebirth_5": "Prestige Master (5 rebirths)",
+    "rebirth_max": f"Maxed Out ({REBIRTH_MAX} rebirths)",
 }
 
 
@@ -1653,9 +1925,14 @@ async def do_business(ctx):
         lines.append("you don't own a business yet")
     lines.append("")
     lines.append("tiers - `/buybusiness <tier>` (upgrading auto-collects and fully replaces your current one):")
+    rebirths = a.get("rebirths", 0)
     for tier_key in BUSINESS_ORDER:
         t = BUSINESS_TIERS[tier_key]
-        lines.append(f"**{tier_key}** ({t['label']}) - {chips(t['price'])}, {chips(t['hourly'])}/hr")
+        req = BUSINESS_REBIRTH_REQ.get(tier_key, 0)
+        if req > rebirths:
+            lines.append(f"**{tier_key}** ({t['label']}) - 🔒 unlocks at {req} rebirth{'s' if req != 1 else ''}")
+        else:
+            lines.append(f"**{tier_key}** ({t['label']}) - {chips(t['price'])}, {chips(t['hourly'])}/hr")
     await reply(ctx, embed=discord.Embed(title="businesses", description="\n".join(lines), color=discord.Color.gold()))
 
 
@@ -1677,6 +1954,10 @@ async def do_buybusiness(ctx, tier):
         return
     econ = loadEcon(econ_file_for(space))
     a = acct(econ, space, ctx.author)
+    req = BUSINESS_REBIRTH_REQ.get(tier, 0)
+    if a.get("rebirths", 0) < req:
+        await reply(ctx, content=f"**{BUSINESS_TIERS[tier]['label']}** unlocks at {req} rebirth{'s' if req != 1 else ''} - you're at {a.get('rebirths', 0)}. check /rebirth", ephemeral=True)
+        return
     current = a.get("business")
     if current:
         if BUSINESS_ORDER.index(current["tier"]) >= BUSINESS_ORDER.index(tier):
@@ -1717,15 +1998,31 @@ async def do_collect(ctx):
         await reply(ctx, content="you don't own a business yet, check /business", ephemeral=True)
         return
     tier = BUSINESS_TIERS[biz["tier"]]
-    elapsed_h = min((time.time() - biz["last_collect"]) / 3600, BUSINESS_CAP_HOURS)
+    used_overtime = bool(a.get("overtime_pass"))
+    cap = 168 if used_overtime else BUSINESS_CAP_HOURS  # overtime_pass raises the cap to 7 days, not truly uncapped
+    elapsed_h = min((time.time() - biz["last_collect"]) / 3600, cap)
     earned = int(tier["hourly"] * elapsed_h)
     if earned <= 0:
         await reply(ctx, content="nothing built up yet, check back later", ephemeral=True)
         return
+    note = ""
+    if used_overtime:
+        a["overtime_pass"] = False
+        note += " (overtime pass, cap lifted)"
+    if a["upgrades"].get("empire_visionary"):
+        earned = int(earned * 1.15)
+        note += " (empire visionary bonus)"
+    if a.get("rebirths"):
+        earned = int(earned * rebirth_mult(a))
+        note += f" (rebirth x{a['rebirths']} bonus)"
+    if a.get("midas"):
+        earned *= 2
+        a["midas"] = False
+        note += " (midas touch, doubled!)"
     a["bal"] += earned
     biz["last_collect"] = time.time()
     save(econ, econ_file_for(space))
-    await reply(ctx, content=f"collected {chips(earned)} from your {tier['label']}. bal {chips(a['bal'])}")
+    await reply(ctx, content=f"collected {chips(earned)}{note} from your {tier['label']}. bal {chips(a['bal'])}")
 
 
 @bot.slash_command(name="collect", description="claim income from your business")
@@ -1745,9 +2042,16 @@ async def do_upgrades(ctx):
     a = acct(econ, space, ctx.author)
     save(econ, econ_file_for(space))
     lines = []
+    rebirths = a.get("rebirths", 0)
     for name, u in UPGRADES.items():
-        owned = " (owned)" if a.get("upgrades", {}).get(name) else f" - {chips(u['price'])}"
-        lines.append(f"**{name}**{owned} - {u['desc']}")
+        req = UPGRADE_REBIRTH_REQ.get(name, 0)
+        if a.get("upgrades", {}).get(name):
+            status = " (owned)"
+        elif req > rebirths:
+            status = f" - 🔒 unlocks at {req} rebirth{'s' if req != 1 else ''}"
+        else:
+            status = f" - {chips(u['price'])}"
+        lines.append(f"**{name}**{status} - {u['desc']}")
     lines.append("\nbuy with `/buyupgrade <name>` - one-time, permanent, never used up or pawned")
     await reply(ctx, embed=discord.Embed(title="upgrades", description="\n".join(lines), color=discord.Color.gold()))
 
@@ -1773,6 +2077,10 @@ async def do_buyupgrade(ctx, name):
     if a.get("upgrades", {}).get(name):
         await reply(ctx, content=f"you already own **{name}**", ephemeral=True)
         return
+    req = UPGRADE_REBIRTH_REQ.get(name, 0)
+    if a.get("rebirths", 0) < req:
+        await reply(ctx, content=f"**{name}** unlocks at {req} rebirth{'s' if req != 1 else ''} - you're at {a.get('rebirths', 0)}. check /rebirth", ephemeral=True)
+        return
     price = UPGRADES[name]["price"]
     if a["bal"] < price:
         await reply(ctx, content=f"need {chips(price)}, you have {chips(a['bal'])}", ephemeral=True)
@@ -1792,6 +2100,83 @@ async def buyupgrade(ctx, name: Option(str, "which upgrade", choices=list(UPGRAD
 @bot.command(name="buyupgrade")
 async def buyupgrade_cmd(ctx, name: str):
     await do_buyupgrade(ctx, name)
+
+
+# ================= REBIRTH =================
+# prestige reset: cash in your net worth once it clears the requirement for
+# a permanent, ever-growing boost to earnings + luck, plus access to higher
+# business tiers / rarer shop items / upgrades gated behind a rebirth count.
+# everything economy-side gets wiped back to a clean slate - only your
+# badge case and the rebirth count itself carry over.
+async def do_rebirth(ctx):
+    space = get_space(ctx)
+    econ = loadEcon(econ_file_for(space))
+    a = acct(econ, space, ctx.author)
+    count = a.get("rebirths", 0)
+    if count >= REBIRTH_MAX:
+        await reply(ctx, content=(
+            f"you're already at the max, {REBIRTH_MAX} rebirths - that's **{rebirth_mult(a):.1f}x** earnings "
+            f"and **+{rebirth_luck(a) * 100:.2f}%** luck, permanently. nothing more to cash in for"
+        ), ephemeral=True)
+        return
+    net_worth = a["bal"] + a["bank"]
+    req = rebirth_requirement(count)
+    if net_worth < req:
+        await reply(ctx, content=(
+            f"need {chips(req)} total net worth (bal + bank) to rebirth - you're at {chips(net_worth)}. "
+            f"/work, /crime, and a /business go a long way"
+        ), ephemeral=True)
+        return
+    new_count = count + 1
+    kept_name = a["name"]
+    kept_badges = a.get("badges", [])
+    fresh = new_acct(kept_name)
+    fresh["rebirths"] = new_count
+    fresh["badges"] = kept_badges
+    if new_count == 1:
+        award(fresh, "rebirth", "Reborn", space.name)
+    if new_count == 5:
+        award(fresh, "rebirth_5", "Prestige Master", space.name)
+    if new_count == REBIRTH_MAX:
+        award(fresh, "rebirth_max", "Maxed Out", space.name)
+    a.clear()
+    a.update(fresh)
+    save(econ, econ_file_for(space))
+    log_event(space.name, f"{ctx.author.display_name} reached rebirth #{new_count}")
+
+    role_note = ""
+    if ctx.guild:
+        g_cfg = get_guild_cfg(loadCfg(), ctx.guild)
+        await grant_rebirth_roles(ctx.guild, ctx.author, new_count, g_cfg)
+        if g_cfg.get("rebirth_roles"):
+            role_note = " check your roles - you might've earned a new one."
+
+    mult = rebirth_mult(a)
+    luck_pct = rebirth_luck(a) * 100
+    next_line = (f"you've hit the max - {REBIRTH_MAX} rebirths, this is as strong as it gets."
+                 if new_count >= REBIRTH_MAX else
+                 f"next rebirth needs {chips(rebirth_requirement(new_count))} net worth.")
+    await reply(ctx, embed=discord.Embed(
+        title="🌟 REBORN",
+        description=(
+            f"this is rebirth **#{new_count}/{REBIRTH_MAX}**. everything's reset to {chips(starting_bal)} - "
+            f"bal, bank, loan, business, investments, upgrades, and shop inventory are all wiped.\n\n"
+            f"permanently, from now on: **{mult:.1f}x** earnings on /work, /crime, and /collect, and "
+            f"**+{luck_pct:.2f}%** success chance on /crime, /rob, and /beg.\n\n"
+            f"{next_line} check /shop, /business, and /upgrades - you may have unlocked something new.{role_note}"
+        ),
+        color=discord.Color.gold()
+    ))
+
+
+@bot.slash_command(name="rebirth", description="prestige reset - trade your net worth for a permanent earnings + luck boost")
+async def rebirth(ctx):
+    await do_rebirth(ctx)
+
+
+@bot.command(name="rebirth", aliases=["prestige"])
+async def rebirth_cmd(ctx):
+    await do_rebirth(ctx)
 
 
 # ================= BOUNTIES =================
@@ -1831,7 +2216,7 @@ async def bounty(ctx, user: Option(discord.Member, "who"), amount: Option(int, "
 
 
 @bot.command(name="bounty")
-async def bounty_cmd(ctx, user: discord.Member, amount: int):
+async def bounty_cmd(ctx, user: discord.Member, amount: Amount):
     await do_bounty(ctx, user, amount)
 
 
@@ -1889,7 +2274,7 @@ async def invest(ctx, amount: Option(int, "how much", min_value=1), days: Option
 
 
 @bot.command(name="invest")
-async def invest_cmd(ctx, amount: int, days: int):
+async def invest_cmd(ctx, amount: Amount, days: int):
     await do_invest(ctx, amount, days)
 
 
@@ -1931,7 +2316,7 @@ async def coinflip(ctx, amount: Option(int, "bet", min_value=1), side: Option(st
 
 
 @bot.command(name="coinflip", aliases=["cf"])
-async def coinflip_cmd(ctx, amount: int, side: str):
+async def coinflip_cmd(ctx, amount: Amount, side: str):
     side = side.lower()
     if side not in ("heads", "tails"):
         await reply(ctx, content="pick heads or tails", ephemeral=True)
@@ -2015,7 +2400,7 @@ async def slots(ctx, amount: Option(int, "bet", min_value=1)):
 
 
 @bot.command(name="slots")
-async def slots_cmd(ctx, amount: int):
+async def slots_cmd(ctx, amount: Amount):
     await do_slots(ctx, amount)
 
 
@@ -2075,7 +2460,7 @@ async def dice(ctx, amount: Option(int, "bet", min_value=1), guess: Option(int, 
 
 
 @bot.command(name="dice")
-async def dice_cmd(ctx, amount: int, guess: int):
+async def dice_cmd(ctx, amount: Amount, guess: int):
     await do_dice(ctx, amount, guess)
 
 
@@ -2152,7 +2537,7 @@ async def roulette(ctx, amount: Option(int, "bet", min_value=1), choice: Option(
 
 
 @bot.command(name="roulette", aliases=["rl"])
-async def roulette_cmd(ctx, amount: int, choice: str):
+async def roulette_cmd(ctx, amount: Amount, choice: str):
     await do_roulette(ctx, amount, choice)
 
 
@@ -2276,7 +2661,7 @@ async def war(ctx, amount: Option(int, "bet", min_value=1)):
 
 
 @bot.command(name="war")
-async def war_cmd(ctx, amount: int):
+async def war_cmd(ctx, amount: Amount):
     await do_war(ctx, amount)
 
 
@@ -2363,7 +2748,7 @@ async def hilo(ctx, amount: Option(int, "bet", min_value=1)):
 
 
 @bot.command(name="hilo")
-async def hilo_cmd(ctx, amount: int):
+async def hilo_cmd(ctx, amount: Amount):
     await do_hilo(ctx, amount)
 
 
@@ -2411,7 +2796,7 @@ async def crash(ctx, amount: Option(int, "bet", min_value=1), target: Option(flo
 
 
 @bot.command(name="crash")
-async def crash_cmd(ctx, amount: int, target: float):
+async def crash_cmd(ctx, amount: Amount, target: float):
     await do_crash(ctx, amount, target)
 
 
@@ -2541,7 +2926,7 @@ async def blackjack(ctx, amount: Option(int, "bet", min_value=1)):
 
 
 @bot.command(name="blackjack", aliases=["bj"])
-async def blackjack_cmd(ctx, amount: int):
+async def blackjack_cmd(ctx, amount: Amount):
     await do_blackjack(ctx, amount)
 
 
@@ -2619,7 +3004,7 @@ async def duel(ctx, user: Option(discord.Member, "who to challenge"), amount: Op
 
 
 @bot.command(name="duel")
-async def duel_cmd(ctx, user: discord.Member, amount: int):
+async def duel_cmd(ctx, user: discord.Member, amount: Amount):
     await do_duel(ctx, user, amount)
 
 
@@ -2698,7 +3083,7 @@ async def horserace(ctx, amount: Option(int, "bet", min_value=1), horse: Option(
 
 
 @bot.command(name="horserace", aliases=["horse"])
-async def horserace_cmd(ctx, amount: int, *, horse: str):
+async def horserace_cmd(ctx, amount: Amount, *, horse: str):
     await do_horserace(ctx, amount, horse)
 
 
@@ -2736,7 +3121,7 @@ async def plinko(ctx, amount: Option(int, "bet", min_value=1)):
 
 
 @bot.command(name="plinko")
-async def plinko_cmd(ctx, amount: int):
+async def plinko_cmd(ctx, amount: Amount):
     await do_plinko(ctx, amount)
 
 
@@ -2878,7 +3263,7 @@ async def mines(ctx, amount: Option(int, "bet", min_value=1), mine_count: Option
 
 
 @bot.command(name="mines")
-async def mines_cmd(ctx, amount: int, mine_count: int = 5):
+async def mines_cmd(ctx, amount: Amount, mine_count: int = 5):
     await do_mines(ctx, amount, mine_count)
 
 
@@ -2914,7 +3299,7 @@ async def wheel(ctx, amount: Option(int, "bet", min_value=1)):
 
 
 @bot.command(name="wheel")
-async def wheel_cmd(ctx, amount: int):
+async def wheel_cmd(ctx, amount: Amount):
     await do_wheel(ctx, amount)
 
 
@@ -2981,7 +3366,7 @@ async def keno(ctx, amount: Option(int, "bet", min_value=1), numbers: Option(str
 
 
 @bot.command(name="keno")
-async def keno_cmd(ctx, amount: int, *, numbers: str):
+async def keno_cmd(ctx, amount: Amount, *, numbers: str):
     await do_keno(ctx, amount, numbers)
 
 
@@ -3038,7 +3423,7 @@ async def baccarat(ctx, amount: Option(int, "bet", min_value=1), choice: Option(
 
 
 @bot.command(name="baccarat", aliases=["bacc"])
-async def baccarat_cmd(ctx, amount: int, choice: str):
+async def baccarat_cmd(ctx, amount: Amount, choice: str):
     await do_baccarat(ctx, amount, choice)
 
 
@@ -3085,7 +3470,7 @@ async def rps(ctx, amount: Option(int, "bet", min_value=1), choice: Option(str, 
 
 
 @bot.command(name="rps")
-async def rps_cmd(ctx, amount: int, choice: str):
+async def rps_cmd(ctx, amount: Amount, choice: str):
     await do_rps(ctx, amount, choice)
 
 
@@ -3136,7 +3521,7 @@ async def ladder(ctx, amount: Option(int, "bet", min_value=1), rungs: Option(int
 
 
 @bot.command(name="ladder")
-async def ladder_cmd(ctx, amount: int, rungs: int):
+async def ladder_cmd(ctx, amount: Amount, rungs: int):
     await do_ladder(ctx, amount, rungs)
 
 
@@ -3407,7 +3792,7 @@ async def addchips(ctx, user: Option(discord.Member, "who"), amount: Option(int,
 
 
 @bot.command(name="addchips")
-async def addchips_cmd(ctx, user: discord.Member, amount: int):
+async def addchips_cmd(ctx, user: discord.Member, amount: Amount):
     await do_addchips(ctx, user, amount)
 
 
@@ -3431,7 +3816,7 @@ async def removechips(ctx, user: Option(discord.Member, "who"), amount: Option(i
 
 
 @bot.command(name="removechips")
-async def removechips_cmd(ctx, user: discord.Member, amount: int):
+async def removechips_cmd(ctx, user: discord.Member, amount: Amount):
     await do_removechips(ctx, user, amount)
 
 

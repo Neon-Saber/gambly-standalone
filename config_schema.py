@@ -163,6 +163,12 @@ def ensure_guild(all_cfg, gid, name=None):
     g.setdefault("level_message", None)  # dashboard template; LEVEL_UP_MESSAGE env wins live if set
     g.setdefault("level_roles", {})  # {"<level>": role_id} - awarded (stacking, never removed) on level-up
 
+    # ---- rebirth (prestige reset) ----
+    # {"<rebirth count>": role_id} - same stacking behavior as level_roles:
+    # reaching that many rebirths grants every configured role at or below
+    # the count the member doesn't already have, nothing is ever removed.
+    g.setdefault("rebirth_roles", {})
+
     # ---- live member-count voice channel (cogs/server_stats.py) ----
     # renames a voice channel to show how many non-bot members are in the
     # server, e.g. "Members: 42". channel follows the usual one-time-env-

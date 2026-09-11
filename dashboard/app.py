@@ -173,8 +173,9 @@ def api_guild(gid):
             "win_streak": u.get("win_streak", 0),
             "business": (u.get("business") or {}).get("tier"),
             "badges": u.get("badges", []),
+            "rebirths": u.get("rebirths", 0),
         })
-    users.sort(key=lambda u: -(u["bal"] + u["bank"]))
+    users.sort(key=lambda u: (-u["rebirths"], -(u["bal"] + u["bank"])))
 
     resp = {
         "id": gid,
@@ -215,6 +216,7 @@ def api_guild(gid):
             "level_channel_id": g_cfg.get("level_channel_id"),
             "level_message": g_cfg.get("level_message"),
             "level_roles": g_cfg.get("level_roles", {}),
+            "rebirth_roles": g_cfg.get("rebirth_roles", {}),
             "member_count_enabled": g_cfg.get("member_count_enabled", False),
             "member_count_channel_id": g_cfg.get("member_count_channel_id"),
             "member_count_template": g_cfg.get("member_count_template"),
@@ -690,6 +692,35 @@ def set_level_roles(gid):
     return jsonify({"ok": True, "level_roles": parsed})
 
 
+@app_routes.route("/api/guild/<gid>/rebirth_roles", methods=["POST"])
+@guild_access_required
+def set_rebirth_roles(gid):
+    # {"rebirth_roles": {"<rebirth count>": "<role id>"}} - same full-replace
+    # pattern as level_roles above. Capped at 7 since that's the bot's hard
+    # rebirth ceiling (REBIRTH_MAX in bot.py) - anything higher can never
+    # actually be reached, so it's rejected here rather than saved as dead config.
+    if gid == d.DM_ID:
+        return jsonify({"error": "not available for the personal/DM economy"}), 400
+    body = request.get_json() or {}
+    raw_roles = body.get("rebirth_roles", {})
+    parsed = {}
+    for cnt, role_id in raw_roles.items():
+        try:
+            cnt_int = int(cnt)
+            role_int = int(role_id)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= cnt_int <= 7:
+            parsed[str(cnt_int)] = str(role_int)  # string - see config_schema._env_id docstring
+    cfg = d.load(d.cfg_file)
+    g = d.guild_cfg(cfg, gid)
+    g["rebirth_roles"] = parsed
+    d.save(d.cfg_file, cfg)
+    d.log_event((g.get("name") or gid), f"updated rebirth roles ({len(parsed)} tier(s))",
+                actor=current_user()["username"])
+    return jsonify({"ok": True, "rebirth_roles": parsed})
+
+
 @app_routes.route("/api/guild/<gid>/member_count_config", methods=["POST"])
 @guild_access_required
 def set_member_count_config(gid):
@@ -726,6 +757,29 @@ def api_level_leaderboard(gid):
     return jsonify([
         {"id": uid, "name": e.get("name", uid), "level": e.get("level", 0), "total_xp": e.get("total_xp", 0)}
         for uid, e in ranked
+    ])
+
+
+@app_routes.route("/api/guild/<gid>/rebirth_leaderboard")
+@guild_access_required
+def api_rebirth_leaderboard(gid):
+    if gid == d.DM_ID:
+        return jsonify([])
+    econ = d.load(d.econ_path_for(gid))
+    users = econ.get(gid, {}).get("users", {})
+    ranked = sorted(
+        users.items(),
+        key=lambda kv: (-kv[1].get("rebirths", 0), -(kv[1].get("bal", 0) + kv[1].get("bank", 0)))
+    )[:15]
+    return jsonify([
+        {
+            "id": uid,
+            "name": e.get("name", uid),
+            "rebirths": e.get("rebirths", 0),
+            "bal": e.get("bal", 0),
+            "bank": e.get("bank", 0),
+        }
+        for uid, e in ranked if e.get("rebirths", 0) > 0
     ])
 
 

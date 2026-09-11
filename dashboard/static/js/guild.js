@@ -1,7 +1,7 @@
 const GID = document.body.dataset.gid;
 let STATE = null;
 
-const TABS = ['overview', 'players', 'settings', 'moderation', 'games', 'leveling', 'bounties', 'activity', 'danger'];
+const TABS = ['overview', 'players', 'settings', 'moderation', 'games', 'leveling', 'bounties', 'rebirths', 'activity', 'danger'];
 
 function showTab(name) {
   TABS.forEach((t) => {
@@ -78,6 +78,7 @@ async function init() {
   renderGameChannels();
   renderLeveling();
   renderBounties();
+  renderRebirths();
   renderDanger();
 }
 
@@ -137,7 +138,7 @@ function renderPlayers() {
       </div>
       <div class="table-wrap"><table>
         <thead><tr>
-          <th>Player</th><th class="num">Wallet</th><th class="num">Bank</th><th class="num">Loan</th><th>Status</th><th></th>
+          <th>Player</th><th class="num">Wallet</th><th class="num">Bank</th><th class="num">Loan</th><th class="num">Rebirths</th><th>Status</th><th></th>
         </tr></thead>
         <tbody id="players-tbody"></tbody>
       </table></div>
@@ -155,7 +156,7 @@ function renderPlayers() {
 function renderPlayerRows() {
   const tbody = document.getElementById('players-tbody');
   if (!STATE.users.length) {
-    tbody.innerHTML = `<tr><td colspan="6" class="empty">No players have used the bot here yet.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="empty">No players have used the bot here yet.</td></tr>`;
     return;
   }
   tbody.innerHTML = STATE.users.map((u) => `
@@ -164,6 +165,7 @@ function renderPlayerRows() {
       <td class="num"><input type="number" class="mono" style="width:100px" value="${u.bal}" data-field="bal"></td>
       <td class="num"><input type="number" class="mono" style="width:100px" value="${u.bank}" data-field="bank"></td>
       <td class="num chip">${u.loan_owed ? fmtChips(u.loan_owed) + (u.loan_defaulted ? ' (defaulted)' : '') : '—'}</td>
+      <td class="num">${u.rebirths ? `🌟 ${u.rebirths}` : '—'}</td>
       <td>
         ${u.is_manager ? '<span class="badge badge-gold">Manager</span>' : ''}
         ${u.is_banned ? '<span class="badge badge-red">Banned</span>' : ''}
@@ -655,6 +657,84 @@ function renderBounties() {
       if (r) { toast('Bounty cleared.', 'ok'); refresh(); }
     });
   });
+}
+
+// ----------------------------------------------------------------- rebirths
+async function renderRebirths() {
+  const el = document.getElementById('tab-rebirths');
+  if (STATE.is_personal) { el.innerHTML = `<div class="empty">Not applicable to the personal/DM ledger.</div>`; return; }
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <h2>Rebirth roles</h2>
+        <span class="hint">Roles stack - reaching a rebirth count grants every role at or below it that the member doesn't already have. Capped at 7, the bot's max rebirth count.</span>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Rebirths</th><th>Role</th><th></th></tr></thead>
+        <tbody id="rr-rows"></tbody>
+      </table></div>
+      <button class="btn btn-sm btn-ghost" id="rr-add" style="margin-top:8px;">+ Add tier</button>
+      <button class="btn btn-gold" id="rr-save" style="margin-top:12px;">Save</button>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Rebirth leaderboard</h2></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Player</th><th>Rebirths</th><th class="num">Bal + Bank</th></tr></thead>
+        <tbody id="rb-board"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+      </table></div>
+    </div>`;
+
+  const [roles, board] = await Promise.all([
+    apiGet(`/api/guild/${GID}/roles`),
+    apiGet(`/api/guild/${GID}/rebirth_leaderboard`),
+  ]);
+  const roleOptions = (selectedId) => pickerOptions(roles, selectedId, { emptyLabel: 'Pick a role…' });
+
+  // ---- rebirth roles table ----
+  const rowsEl = document.getElementById('rr-rows');
+  const addRow = (count, roleId) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="number" min="0" max="7" class="rr-count" value="${count ?? ''}" style="width:80px;"></td>
+      <td><select class="rr-role">${roleOptions(roleId)}</select></td>
+      <td><button class="btn btn-sm btn-danger rr-remove">Remove</button></td>`;
+    tr.querySelector('.rr-remove').addEventListener('click', () => tr.remove());
+    rowsEl.appendChild(tr);
+  };
+  const existing = Object.entries(STATE.rebirth_roles || {}).sort((a, b) => Number(a[0]) - Number(b[0]));
+  if (existing.length) {
+    existing.forEach(([cnt, roleId]) => addRow(cnt, roleId));
+  } else {
+    rowsEl.innerHTML = `<tr><td colspan="3" class="empty">No rebirth roles set yet.</td></tr>`;
+  }
+  document.getElementById('rr-add').addEventListener('click', () => {
+    if (rowsEl.querySelector('td.empty')) rowsEl.innerHTML = '';
+    addRow('', '');
+  });
+  document.getElementById('rr-save').addEventListener('click', async () => {
+    const rebirth_roles = {};
+    rowsEl.querySelectorAll('tr').forEach((tr) => {
+      const countInput = tr.querySelector('.rr-count');
+      const roleSelect = tr.querySelector('.rr-role');
+      if (!countInput || !roleSelect) return;
+      const cnt = countInput.value.trim();
+      const roleId = roleSelect.value;
+      if (cnt !== '' && roleId) rebirth_roles[cnt] = roleId;
+    });
+    const r = await apiPost(`/api/guild/${GID}/rebirth_roles`, { rebirth_roles });
+    if (r) { toast('Saved.', 'ok'); refresh(); }
+  });
+
+  // ---- leaderboard ----
+  const boardEl = document.getElementById('rb-board');
+  if (board && board.length) {
+    boardEl.innerHTML = board.map((e) =>
+      `<tr><td>${escapeHtml(e.name)}</td><td>${e.rebirths}</td><td class="num chip">${fmtChips(e.bal + e.bank)}</td></tr>`
+    ).join('');
+  } else {
+    boardEl.innerHTML = `<tr><td colspan="3" class="empty">Nobody's rebirthed here yet.</td></tr>`;
+  }
 }
 
 // ----------------------------------------------------------------- activity
