@@ -15,7 +15,21 @@
   .prose-wrap li { margin: 4px 0; }
   .prose-wrap code { background: var(--bg-2, #17211c); padding: 1px 6px; border-radius: 4px; font-size: 13px; }
   .prose-wrap a { color: var(--gold-bright, #ddbb63); text-decoration: underline; }
-  .back { display: inline-block; margin-top: 40px; }
+  .back {
+    display: inline-flex; align-items: center; gap: 7px;
+    margin-top: 40px;
+    padding: 9px 16px;
+    border-radius: var(--radius, 7px);
+    border: 1px solid var(--line, #2a3a33);
+    background: var(--bg-3, #1e2b24);
+    color: var(--ink, #ece7db) !important;
+    font-size: 13.5px;
+    font-weight: 500;
+    text-decoration: none !important;
+    transition: border-color 120ms ease, background 120ms ease;
+  }
+  .back:hover { border-color: #3a4d43; background: #223027; }
+  .back svg { flex-shrink: 0; }
 </style>
 </head>
 <body>
@@ -66,7 +80,10 @@
     <p>Questions about these terms: {{ contact }}</p>
     {% endif %}
 
-    <a class="back" href="{{ url_for('app_routes.landing') }}">&larr; Back</a>
+    <a class="back" href="{{ url_for('app_routes.landing') }}">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      Back
+    </a>
   </div>
 </body>
 </html>
