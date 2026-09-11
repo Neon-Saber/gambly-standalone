@@ -5,7 +5,16 @@ const TABS = ['overview', 'players', 'settings', 'moderation', 'games', 'levelin
 
 function showTab(name) {
   TABS.forEach((t) => {
-    document.getElementById('tab-' + t).style.display = t === name ? '' : 'none';
+    const el = document.getElementById('tab-' + t);
+    if (t === name) {
+      el.style.display = '';
+      el.classList.remove('tab-anim-in');
+      void el.offsetWidth; // restart animation
+      el.classList.add('tab-anim-in');
+    } else {
+      el.style.display = 'none';
+      el.classList.remove('tab-anim-in');
+    }
   });
   document.querySelectorAll('.nav-item[data-tab]').forEach((b) => {
     b.classList.toggle('active', b.dataset.tab === name);

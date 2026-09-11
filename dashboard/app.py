@@ -273,7 +273,7 @@ def set_balance(gid):
     if gid not in econ or uid not in econ[gid].get("users", {}):
         return jsonify({"error": "no record for that user yet - they need to run a command first"}), 400
     name = econ[gid]["users"][uid].get("name", uid)
-    econ[gid]["users"][uid]["bal"] = max(0, new_bal)
+    econ[gid]["users"][uid]["bal"] = new_bal
     d.save(d.econ_path_for(gid), econ)
     d.log_event(d.guild_display_name(econ, d.load(d.cfg_file), gid),
                 f"set {name}'s wallet to {econ[gid]['users'][uid]['bal']}", actor=current_user()["username"])
@@ -293,7 +293,7 @@ def set_bank(gid):
     if gid not in econ or uid not in econ[gid].get("users", {}):
         return jsonify({"error": "no record for that user yet - they need to run a command first"}), 400
     name = econ[gid]["users"][uid].get("name", uid)
-    econ[gid]["users"][uid]["bank"] = max(0, new_bank)
+    econ[gid]["users"][uid]["bank"] = new_bank
     d.save(d.econ_path_for(gid), econ)
     d.log_event(d.guild_display_name(econ, d.load(d.cfg_file), gid),
                 f"set {name}'s bank to {econ[gid]['users'][uid]['bank']}", actor=current_user()["username"])
@@ -314,7 +314,7 @@ def adjust_balance(gid):
     if gid not in econ or uid not in econ[gid].get("users", {}):
         return jsonify({"error": "no record for that user yet - they need to run a command first"}), 400
     u = econ[gid]["users"][uid]
-    u["bal"] = max(0, u.get("bal", 0) + amount)
+    u["bal"] = u.get("bal", 0) + amount
     d.save(d.econ_path_for(gid), econ)
     verb = "gave" if amount >= 0 else "took"
     text = f"{verb} {abs(amount)} chips {'to' if amount >= 0 else 'from'} {u.get('name', uid)}, new balance {u['bal']}"
@@ -337,7 +337,7 @@ def bulk_grant(gid):
         return jsonify({"error": "no players in that server yet"}), 400
     count = 0
     for u in econ[gid]["users"].values():
-        u["bal"] = max(0, u.get("bal", 0) + amount)
+        u["bal"] = u.get("bal", 0) + amount
         count += 1
     d.save(d.econ_path_for(gid), econ)
     verb = "granted" if amount >= 0 else "deducted"

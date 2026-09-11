@@ -10,8 +10,10 @@
 <div class="shell" style="flex-direction:column;">
   <div class="topbar">
     <div class="topbar-left">
-      {% include "_mark.html" %}
-      <span>{{ bot_name }}</span>
+      <a class="topbar-brand" href="{{ url_for('app_routes.dashboard_home') }}">
+        {% include "_mark.html" %}
+        <span>{{ bot_name }}</span>
+      </a>
       <span class="topbar-crumb">/ <b id="crumb-name">…</b></span>
     </div>
     <div class="topbar-right">
