@@ -9,13 +9,17 @@ in .env to seed a server's channel the first time its config is created,
 after that the dashboard owns it. Set/change it anytime from the dashboard
 without a restart.
 
-THE "make it look human" PART: this is short on purpose - one spoken-style
-opener line (a handful to pick from, so it's not the exact same line every
-cycle) plus just ping and version as fields. No uptime, no member count,
-no economy figures - those made it read like a stats dump instead of
-something a person would actually say when you ask "you good?".
+THE "make it look human" PART: one spoken-style opener line (a handful to
+pick from, so it's not the exact same line every cycle), a plain "Online"
+indicator, then a compact three-field grid: latency, uptime, version. No
+servers, no member count, no bot tag, no economy figures - those made it
+read like a stats dump instead of a quick glance.
 
-Version comes from version.py (git commit count + short hash) - nothing to
+Uptime is tracked from when this cog loads (i.e. since the last bot
+restart) - there's no persistence across restarts on purpose, since
+"uptime" should mean exactly that.
+
+Version comes from version.py (git commit count, e.g. "v128") - nothing to
 remember to bump by hand; it just moves on its own every real deploy.
 
 The periodic post EDITS one message in place (like server_stats' member-
@@ -53,10 +57,23 @@ PING_BAD = ["dragging a bit - might be discord's side, might be worth a peek at 
 class BotStatus(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.start_time = discord.utils.utcnow()
         self.status_loop.start()
 
     def cog_unload(self):
         self.status_loop.cancel()
+
+    def _uptime_str(self):
+        delta = discord.utils.utcnow() - self.start_time
+        days = delta.days
+        hours, remainder = divmod(delta.seconds, 3600)
+        minutes = remainder // 60
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        parts.append(f"{hours}h")
+        parts.append(f"{minutes}m")
+        return " ".join(parts)
 
     async def _build_embed(self, guild):
         ping_ms = round(self.bot.latency * 1000)
@@ -67,7 +84,9 @@ class BotStatus(commands.Cog):
         else:
             ping_note = random.choice(PING_BAD)
 
-        return embeds.bot_status_embed(guild, random.choice(OPENERS), ping_ms, ping_note, version.VERSION)
+        return embeds.bot_status_embed(
+            guild, random.choice(OPENERS), ping_ms, ping_note, self._uptime_str(), version.VERSION
+        )
 
     async def _sync_guild(self, guild):
         all_cfg = cfgschema.load_cfg()

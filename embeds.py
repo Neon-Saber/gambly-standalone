@@ -20,16 +20,17 @@ def user_field(embed, label, user):
     embed.add_field(name=label, value=f"{user.mention} (`{user.id}`)", inline=True)
 
 
-def bot_status_embed(guild, opener, ping_ms, ping_note, version_str):
+def bot_status_embed(guild, opener, ping_ms, ping_note, uptime_str, version_str):
     """Friendly "how's it going" status embed - see cogs/bot_status.py for
-    the human-toned copy this wraps. Deliberately just one spoken-style
-    opener line plus ping and version as fields (no uptime, no member
-    count, no economy figures) so it reads like something a person would
-    actually say when you ask "you good?" instead of a stats dump."""
+    the human-toned copy this wraps. One spoken-style opener line plus an
+    online indicator, then a compact three-field grid (latency, uptime,
+    version) - no servers/members/bot-tag, so it stays a quick glance
+    instead of a stats dump."""
     embed = _base_embed(f"{guild.name} status", COLOR_INFO)
-    embed.description = opener
-    embed.add_field(name="ping", value=f"{ping_ms}ms - {ping_note}", inline=True)
-    embed.add_field(name="version", value=version_str, inline=True)
+    embed.description = f"{opener}\n\n✅ **Online**"
+    embed.add_field(name="🏓 latency", value=f"{ping_ms}ms - {ping_note}", inline=True)
+    embed.add_field(name="⏱️ uptime", value=uptime_str, inline=True)
+    embed.add_field(name="🏷️ version", value=version_str, inline=True)
     if guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
     embed.set_footer(text="checks in periodically - run /status anytime for a fresh read")
