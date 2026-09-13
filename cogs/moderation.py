@@ -60,6 +60,18 @@ def staff_check():
     return commands.check(predicate)
 
 
+def _hierarchy_ok(ctx, member):
+    """The guild owner can act on anyone; everyone else can only act on
+    someone with a strictly LOWER top role than their own - equal-or-
+    higher is blocked even between two staff/admins, matching how
+    Discord's own kick/ban/timeout UI already behaves. Comparing top
+    roles this way also naturally blocks acting on yourself (your own
+    top role is never lower than your own top role)."""
+    if ctx.author.id == ctx.guild.owner_id:
+        return True
+    return member.top_role < ctx.author.top_role
+
+
 class Moderation(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -79,10 +91,20 @@ class Moderation(commands.Cog):
         except discord.HTTPException:
             pass  # DMs closed, oh well
 
+    async def _require_hierarchy(self, ctx, member, action):
+        """Every command below that acts on a specific member's account
+        (kick/ban/mute/unmute/warn/clearwarnings/purge-by-member) calls
+        this first. Returns False (and already told the user why) if
+        blocked - caller just needs to `return` in that case."""
+        if _hierarchy_ok(ctx, member):
+            return True
+        await cu.respond(ctx, f"can't {action} someone with an equal/higher role than you", ephemeral=True)
+        return False
+
     # ---------------------------------------------------------------- kick --
     async def _do_kick(self, ctx, member, reason):
-        if member.top_role >= ctx.author.top_role and ctx.author.id != ctx.guild.owner_id:
-            return await cu.respond(ctx, "can't kick someone with an equal/higher role than you", ephemeral=True)
+        if not await self._require_hierarchy(ctx, member, "kick"):
+            return
         await self.dm_notice(member, ctx.guild.name, "kicked", reason)
         await ctx.guild.kick(member, reason=f"{ctx.author} ({ctx.author.id}): {reason or 'no reason'}")
         await self.log(ctx.guild, "member kicked", member, reason, color=embeds.COLOR_SEVERE, moderator=ctx.author)
@@ -108,8 +130,8 @@ class Moderation(commands.Cog):
             pass
 
         if member is not None:
-            if member.top_role >= ctx.author.top_role and ctx.author.id != ctx.guild.owner_id:
-                return await cu.respond(ctx, "can't ban someone with an equal/higher role than you", ephemeral=True)
+            if not await self._require_hierarchy(ctx, member, "ban"):
+                return
             await self.dm_notice(member, ctx.guild.name, "banned", reason)
             await ctx.guild.ban(member, reason=f"{ctx.author} ({ctx.author.id}): {reason or 'no reason'}",
                                 delete_message_days=delete_days)
@@ -164,8 +186,8 @@ class Moderation(commands.Cog):
 
     # ------------------------------------------------------------- timeout --
     async def _do_mute(self, ctx, member, seconds, reason):
-        if member.top_role >= ctx.author.top_role and ctx.author.id != ctx.guild.owner_id:
-            return await cu.respond(ctx, "can't mute someone with an equal/higher role than you", ephemeral=True)
+        if not await self._require_hierarchy(ctx, member, "mute"):
+            return
         until = discord.utils.utcnow() + timedelta(seconds=seconds)
         await member.timeout(until, reason=f"{ctx.author} ({ctx.author.id}): {reason or 'no reason'}")
         human = cu.format_duration(seconds)
@@ -198,6 +220,8 @@ class Moderation(commands.Cog):
         await self._do_mute(ctx, member, seconds, reason)
 
     async def _do_unmute(self, ctx, member):
+        if not await self._require_hierarchy(ctx, member, "unmute"):
+            return
         await member.timeout(None, reason=f"unmuted by {ctx.author} ({ctx.author.id})")
         await self.log(ctx.guild, "member unmuted", member, None, color=embeds.COLOR_INFO, moderator=ctx.author)
         await cu.respond(ctx, f"🔊 unmuted **{member}**")
@@ -214,6 +238,8 @@ class Moderation(commands.Cog):
 
     # -------------------------------------------------------------- warns --
     async def _do_warn(self, ctx, member, reason):
+        if not await self._require_hierarchy(ctx, member, "warn"):
+            return
         data = load_warnings()
         gid, uid = str(ctx.guild.id), str(member.id)
         data.setdefault(gid, {}).setdefault(uid, [])
@@ -257,6 +283,8 @@ class Moderation(commands.Cog):
         await self._do_warnings(ctx, member)
 
     async def _do_clearwarnings(self, ctx, member):
+        if not await self._require_hierarchy(ctx, member, "clear warnings for"):
+            return
         data = load_warnings()
         gid, uid = str(ctx.guild.id), str(member.id)
         had_any = bool(data.get(gid, {}).get(uid))
@@ -277,9 +305,33 @@ class Moderation(commands.Cog):
 
     # -------------------------------------------------------------- purge --
     async def _do_purge(self, ctx, amount, member):
+        if member is not None and not await self._require_hierarchy(ctx, member, "purge messages from"):
+            return
         await cu.maybe_defer(ctx, ephemeral=True)
-        check = (lambda m: m.author.id == member.id) if member else None
-        deleted = await ctx.channel.purge(limit=amount, check=check)
+        # pycord's own purge() calls check(message) unconditionally - it
+        # doesn't special-case check=None like you'd expect, so passing
+        # None here (the normal no-target-member case) crashes inside
+        # pycord itself with "TypeError: 'NoneType' object is not
+        # callable". Always hand it a real callable instead.
+        check = (lambda m: m.author.id == member.id) if member else (lambda m: True)
+        try:
+            deleted = await ctx.channel.purge(limit=amount, check=check)
+        except discord.Forbidden:
+            # by far the most common real-world cause of purge blowing up -
+            # bot role (or a channel-specific permission overwrite) is
+            # missing Manage Messages in THIS channel. Surfacing this
+            # directly instead of letting it fall through to the generic
+            # "something broke, check console" handler saves a console trip
+            # for the one purge failure mode that isn't actually a bug.
+            await cu.followup(ctx, "❌ I don't have Manage Messages permission in this channel - "
+                                    "check my role's permissions here (server settings or this "
+                                    "channel's own permission overwrites can both block it).", ephemeral=True)
+            return
+        except discord.HTTPException as e:
+            await cu.followup(ctx, f"❌ discord rejected the purge ({e}) - if some of these messages "
+                                    f"are older than 14 days, discord's bulk-delete can't touch them; "
+                                    f"try a smaller amount or delete them individually.", ephemeral=True)
+            return
         detail = f"{len(deleted)} message(s) in #{ctx.channel.name}" + (f" from {member}" if member else "")
         await self.log(ctx.guild, "messages purged", ctx.author, detail, color=embeds.COLOR_INFO, moderator=ctx.author)
         await cu.followup(ctx, f"🧹 deleted {len(deleted)} message(s)", ephemeral=True)
