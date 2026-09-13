@@ -20,13 +20,16 @@ def user_field(embed, label, user):
     embed.add_field(name=label, value=f"{user.mention} (`{user.id}`)", inline=True)
 
 
-def bot_status_embed(guild, description):
+def bot_status_embed(guild, opener, ping_ms, ping_note, version_str):
     """Friendly "how's it going" status embed - see cogs/bot_status.py for
-    the human-toned copy this wraps. Deliberately just a title + one
-    description block (no field:value grid) so it reads like a short
-    written check-in instead of a technical stats dump."""
+    the human-toned copy this wraps. Deliberately just one spoken-style
+    opener line plus ping and version as fields (no uptime, no member
+    count, no economy figures) so it reads like something a person would
+    actually say when you ask "you good?" instead of a stats dump."""
     embed = _base_embed(f"{guild.name} status", COLOR_INFO)
-    embed.description = description
+    embed.description = opener
+    embed.add_field(name="ping", value=f"{ping_ms}ms - {ping_note}", inline=True)
+    embed.add_field(name="version", value=version_str, inline=True)
     if guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
     embed.set_footer(text="checks in periodically - run /status anytime for a fresh read")
