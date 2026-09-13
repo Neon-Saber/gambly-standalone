@@ -242,14 +242,14 @@ def pop_rig(guild, user):
 
 
 # ---------------- server tax + weekly tournament stat tracking ----------------
-def take_tax(guild, delta):
+async def take_tax(guild, delta):
     """positive delta only - skims tax_pct into the server pot, returns what's
     left. (this used to be defined but never actually called anywhere, so the
     tax_pct dashboard setting silently did nothing - it's wired into the
-    games' win paths now.)"""
+    games' win paths now.) async because store.locked is async - see store.py."""
     if delta <= 0:
         return delta
-    with store.locked(cfgschema.CFG_FILE):
+    async with store.locked(cfgschema.CFG_FILE):
         all_cfg = loadCfg()
         g = get_guild_cfg(all_cfg, guild)
         pct = g.get("tax_pct", 0)
@@ -1257,7 +1257,7 @@ async def do_give(ctx, user, amount):
     # that races with literally any other economy command on either party
     # can get its balance change silently overwritten (see store.locked)
     insufficient = False
-    with store.locked(econ_file):
+    async with store.locked(econ_file):
         econ = loadEcon()
         a, b = acct(econ, ctx.guild, ctx.author), acct(econ, ctx.guild, user)
         if a["bal"] < amount:
@@ -2313,7 +2313,7 @@ async def do_coinflip(ctx, amount, side):
     if is_banned(ctx.author, space):
         await reply(ctx, content="you're banned from gambling here", ephemeral=True)
         return
-    with store.locked(econ_file_for(space)):
+    async with store.locked(econ_file_for(space)):
         econ = loadEcon(econ_file_for(space))
         a = acct(econ, space, ctx.author)
         if amount <= 0 or amount > a["bal"]:
@@ -2332,7 +2332,7 @@ async def do_coinflip(ctx, amount, side):
             # nothing (same house edge crash uses) - a coinflip with a flat
             # 0% edge never gives the house/economy a way to actually take
             # anything, so chips only ever pile up and never drain
-            won = take_tax(space, int(amount * COINFLIP_WIN_MULT))
+            won = await take_tax(space, int(amount * COINFLIP_WIN_MULT))
             a["bal"] += won
             msg = f"landed {result}, you won {chips(won)}! bal: {chips(a['bal'])}"
             net = won
@@ -2369,7 +2369,7 @@ async def do_slots(ctx, amount):
     if is_banned(ctx.author, space):
         await reply(ctx, content="you're banned from gambling here", ephemeral=True)
         return
-    with store.locked(econ_file_for(space)):
+    async with store.locked(econ_file_for(space)):
         econ = loadEcon(econ_file_for(space))
         a = acct(econ, space, ctx.author)
         if amount <= 0:
@@ -2410,7 +2410,7 @@ async def do_slots(ctx, amount):
 
         # every non-jackpot spin chips a little into the pool, triple 7s takes
         # the whole thing on top of the normal payout then resets it
-        with store.locked(cfgschema.CFG_FILE):
+        async with store.locked(cfgschema.CFG_FILE):
             all_cfg = loadCfg()
             gcfg = get_guild_cfg(all_cfg, space)
             jackpot_note = ""
@@ -2426,7 +2426,7 @@ async def do_slots(ctx, amount):
 
         net = won - amount
         if net > 0:
-            net = take_tax(space, net)
+            net = await take_tax(space, net)
             won = amount + net
         a["bal"] = a["bal"] - amount + won
         check_bet_badges(a, space.name, amount, a["bal"] - net, net)
@@ -2468,7 +2468,7 @@ async def do_dice(ctx, amount, guess):
     if guess < 1 or guess > 6:
         await reply(ctx, content="guess has to be 1-6", ephemeral=True)
         return
-    with store.locked(econ_file_for(space)):
+    async with store.locked(econ_file_for(space)):
         econ = loadEcon(econ_file_for(space))
         a = acct(econ, space, ctx.author)
         if amount <= 0 or amount > a["bal"]:
@@ -2483,7 +2483,7 @@ async def do_dice(ctx, amount, guess):
             roll = random.randint(1, 6)
         bal_before = a["bal"]
         if roll == guess:
-            won = take_tax(space, int(amount * DICE_WIN_MULT))
+            won = await take_tax(space, int(amount * DICE_WIN_MULT))
             a["bal"] += won
             msg = f"rolled a {roll}, nailed it! won {chips(won)}. bal: {chips(a['bal'])}"
             net = won
@@ -2520,7 +2520,7 @@ async def do_roulette(ctx, amount, choice):
     if is_banned(ctx.author, space):
         await reply(ctx, content="you're banned from gambling here", ephemeral=True)
         return
-    with store.locked(econ_file_for(space)):
+    async with store.locked(econ_file_for(space)):
         econ = loadEcon(econ_file_for(space))
         a = acct(econ, space, ctx.author)
         if amount <= 0 or amount > a["bal"]:
@@ -2575,7 +2575,7 @@ async def do_roulette(ctx, amount, choice):
 
         net = won - amount
         if net > 0:
-            net = take_tax(space, net)
+            net = await take_tax(space, net)
             won = amount + net
         a["bal"] = a["bal"] - amount + won
         save(econ, econ_file_for(space))
@@ -2622,7 +2622,7 @@ class AllInConfirm(discord.ui.View):
         color = roulette_color(spin)
         won = self.bet * 2 if self.choice == color else 0
 
-        with store.locked(econ_file_for(self.guild)):
+        async with store.locked(econ_file_for(self.guild)):
             econ = loadEcon(econ_file_for(self.guild))  # reload, balance mighta changed since the confirm popped up
             a = acct(econ, self.guild, self.author)
             a["bal"] = max(0, a["bal"] - self.bet) + won
@@ -2683,7 +2683,7 @@ async def do_war(ctx, amount):
     if is_banned(ctx.author, space):
         await reply(ctx, content="you're banned from gambling here", ephemeral=True)
         return
-    with store.locked(econ_file_for(space)):
+    async with store.locked(econ_file_for(space)):
         econ = loadEcon(econ_file_for(space))
         a = acct(econ, space, ctx.author)
         if amount <= 0 or amount > a["bal"]:
@@ -2700,7 +2700,7 @@ async def do_war(ctx, amount):
         if mine == dealer:
             msg = f"you drew {card_disp(mine)}, dealer drew {card_disp(dealer)} - tie, push, bet returned untouched"
         elif mine > dealer:
-            won = take_tax(space, int(amount * WAR_WIN_MULT))
+            won = await take_tax(space, int(amount * WAR_WIN_MULT))
             a["bal"] += won
             msg = f"you drew {card_disp(mine)}, dealer drew {card_disp(dealer)} - you win {chips(won)}"
         else:
@@ -2760,7 +2760,7 @@ class HiLo(discord.ui.View):
             # otherwise this save would silently undo any other economy
             # activity (this player's or anyone else's) that happened while
             # the game was sitting open waiting for a click
-            with store.locked(econ_file_for(self.guild)):
+            async with store.locked(econ_file_for(self.guild)):
                 econ = loadEcon(econ_file_for(self.guild))
                 a = acct(econ, self.guild, self.author)
                 a["bal"] -= self.amount
@@ -2781,7 +2781,7 @@ class HiLo(discord.ui.View):
     @discord.ui.button(label="Cash Out", style=discord.ButtonStyle.secondary)
     async def cashout(self, b, i):
         net = self.pot - self.amount
-        with store.locked(econ_file_for(self.guild)):
+        async with store.locked(econ_file_for(self.guild)):
             econ = loadEcon(econ_file_for(self.guild))
             a = acct(econ, self.guild, self.author)
             a["bal"] += net
@@ -2908,7 +2908,7 @@ class BJ(discord.ui.View):
         # started - a blackjack hand can sit open a while waiting on
         # hit/stand, and saving a stale copy would silently undo any other
         # economy activity that happened in the meantime
-        with store.locked(econ_file_for(self.guild)):
+        async with store.locked(econ_file_for(self.guild)):
             econ = loadEcon(econ_file_for(self.guild))
             a = acct(econ, self.guild, self.author)
             a["bal"] += delta
@@ -2971,7 +2971,7 @@ async def do_blackjack(ctx, amount):
     if is_banned(ctx.author, space):
         await reply(ctx, content="you're banned from gambling here", ephemeral=True)
         return
-    with store.locked(econ_file_for(space)):
+    async with store.locked(econ_file_for(space)):
         econ = loadEcon(econ_file_for(space))
         a = acct(econ, space, ctx.author)
         if amount <= 0 or amount > a["bal"]:
@@ -3025,7 +3025,7 @@ class DuelConfirm(discord.ui.View):
 
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success)
     async def accept(self, b, i):
-        with store.locked(econ_file_for(self.guild)):
+        async with store.locked(econ_file_for(self.guild)):
             econ = loadEcon(econ_file_for(self.guild))
             chal = acct(econ, self.guild, self.challenger)
             opp = acct(econ, self.guild, self.opponent)
@@ -3244,7 +3244,7 @@ class MinesTile(discord.ui.Button):
             # board started (up to 120s stale) - a mines board can sit open
             # a long time between clicks, and saving a stale copy would
             # silently undo any other economy activity from that whole window
-            with store.locked(econ_file_for(view.guild)):
+            async with store.locked(econ_file_for(view.guild)):
                 econ = loadEcon(econ_file_for(view.guild))
                 a = acct(econ, view.guild, view.author)
                 a["bal"] -= view.amount
@@ -3262,7 +3262,7 @@ class MinesTile(discord.ui.Button):
             view.over = True
             for child in view.children:
                 child.disabled = True
-            with store.locked(econ_file_for(view.guild)):
+            async with store.locked(econ_file_for(view.guild)):
                 econ = loadEcon(econ_file_for(view.guild))
                 a = acct(econ, view.guild, view.author)
                 payout = int(view.amount * view.multiplier)
@@ -3292,7 +3292,7 @@ class MinesCashout(discord.ui.Button):
         view.over = True
         for child in view.children:
             child.disabled = True
-        with store.locked(econ_file_for(view.guild)):
+        async with store.locked(econ_file_for(view.guild)):
             econ = loadEcon(econ_file_for(view.guild))
             a = acct(econ, view.guild, view.author)
             payout = int(view.amount * view.multiplier)
@@ -3528,7 +3528,7 @@ async def do_rps(ctx, amount, choice):
     if choice not in RPS_BEATS:
         await reply(ctx, content="pick rock, paper, or scissors", ephemeral=True)
         return
-    with store.locked(econ_file_for(space)):
+    async with store.locked(econ_file_for(space)):
         econ = loadEcon(econ_file_for(space))
         a = acct(econ, space, ctx.author)
         if amount <= 0 or amount > a["bal"]:
@@ -3540,7 +3540,7 @@ async def do_rps(ctx, amount, choice):
             msg = f"house also threw {house} - push, bet returned"
             net = 0
         elif RPS_BEATS[choice] == house:
-            won = take_tax(space, int(amount * RPS_WIN_MULT))
+            won = await take_tax(space, int(amount * RPS_WIN_MULT))
             a["bal"] += won
             msg = f"you threw {choice}, house threw {house} - you win! +{chips(won)}"
             net = won
@@ -3822,7 +3822,7 @@ async def do_testmode(ctx):
     if not is_owner(ctx.author, ctx.guild):
         await reply(ctx, content="only the server owner can toggle testmode", ephemeral=True)
         return
-    with store.locked(cfgschema.CFG_FILE):
+    async with store.locked(cfgschema.CFG_FILE):
         all_cfg = loadCfg()
         gcfg = get_guild_cfg(all_cfg, ctx.guild)
         gcfg["testmode"] = not gcfg.get("testmode", False)
@@ -3872,7 +3872,7 @@ async def do_addchips(ctx, user, amount):
     if not is_manager(ctx.author, ctx.guild):
         await reply(ctx, content="managers only", ephemeral=True)
         return
-    with store.locked(econ_file):
+    async with store.locked(econ_file):
         econ = loadEcon()
         a = acct(econ, ctx.guild, user)
         a["bal"] += amount
@@ -3899,7 +3899,7 @@ async def do_removechips(ctx, user, amount):
     if not is_manager(ctx.author, ctx.guild):
         await reply(ctx, content="managers only", ephemeral=True)
         return
-    with store.locked(econ_file):
+    async with store.locked(econ_file):
         econ = loadEcon()
         a = acct(econ, ctx.guild, user)
         a["bal"] = max(0, a["bal"] - amount)

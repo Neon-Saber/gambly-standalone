@@ -36,6 +36,7 @@ to local JSON files exactly like this project always worked before -
 nothing breaks for local-only testing, you just won't get cross-machine
 sync until Upstash is configured.
 """
+import asyncio
 import contextlib
 import json
 import os
@@ -177,7 +178,7 @@ def save(name_or_path, data):
 # a second load() for that same key has to wait until the first transaction's
 # save() has finished:
 #
-#   with store.locked(econ_file):
+#   async with store.locked(econ_file):
 #       econ = store.load(econ_file)
 #       ...mutate...
 #       store.save(econ_file, econ)
@@ -187,6 +188,19 @@ def save(name_or_path, data):
 # they're on the same machine/container. Upstash mode uses a short-lived
 # SET-if-not-exists token as a distributed lock, so it also works across
 # separate machines (bot on a VM, dashboard on Render, etc).
+#
+# THIS HAS TO BE ASYNC. fcntl.flock/requests.post/time.sleep all block
+# whatever thread calls them - and the bot's discord.py event loop is a
+# single thread running every command concurrently as coroutines. A plain
+# blocking wait here doesn't just delay the one game that's contending for
+# the lock, it freezes literally everything else the bot is doing (every
+# other command, every other user, Discord's own heartbeat) for as long as
+# the wait takes. Two people hitting the same guild's economy lock back to
+# back is enough contention to blow past Discord's ~3s interaction window,
+# which is exactly what a "didn't respond in time" error is. Offloading the
+# actual wait onto a worker thread via asyncio.to_thread keeps the wait
+# itself (which can still block that ONE worker thread just fine) from ever
+# blocking the event loop everything else runs on.
 #
 # Both are BEST-EFFORT: if a lock can't be acquired within a few seconds
 # (crashed process left a lock file behind, network hiccup with Upstash),
@@ -202,23 +216,29 @@ def _local_lock_path(key):
     return _LOCK_DIR / f"{key}.lock"
 
 
-@contextlib.contextmanager
-def _local_file_lock(key):
+def _acquire_local_lock_sync(key):
+    """Runs on a worker thread (see locked() below) - fcntl.flock blocks
+    whatever thread calls it until the lock is free, which is fine here
+    since it's not the event loop's thread."""
     if not _HAS_FCNTL:
-        yield
-        return
+        return None
     fh = open(_local_lock_path(key), "w")
+    fcntl.flock(fh, fcntl.LOCK_EX)
+    return fh
+
+
+def _release_local_lock_sync(fh):
+    if fh is None:
+        return
     try:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        yield
+        fcntl.flock(fh, fcntl.LOCK_UN)
     finally:
-        try:
-            fcntl.flock(fh, fcntl.LOCK_UN)
-        finally:
-            fh.close()
+        fh.close()
 
 
 def _upstash_acquire_lock(key):
+    """Also runs on a worker thread - the retry loop's time.sleep and the
+    requests.post calls both block, same reasoning as above."""
     lock_key = f"lock:{key}"
     token = uuid.uuid4().hex
     deadline = time.time() + _LOCK_WAIT_TIMEOUT_S
@@ -250,17 +270,21 @@ def _upstash_release_lock(key, token):
         pass  # TTL will clear it out on its own shortly either way
 
 
-@contextlib.contextmanager
-def locked(name_or_path):
+@contextlib.asynccontextmanager
+async def locked(name_or_path):
     """Advisory lock around a load-mutate-save transaction for one stored
-    key. See the module comment above for why this exists and how to use it."""
+    key. See the module comment above for why this exists, how to use it,
+    and why it's `async with` rather than a plain `with`."""
     key = _key_for(name_or_path)
     if _enabled():
-        token = _upstash_acquire_lock(key)
+        token = await asyncio.to_thread(_upstash_acquire_lock, key)
         try:
             yield
         finally:
-            _upstash_release_lock(key, token)
+            await asyncio.to_thread(_upstash_release_lock, key, token)
     else:
-        with _local_file_lock(key):
+        fh = await asyncio.to_thread(_acquire_local_lock_sync, key)
+        try:
             yield
+        finally:
+            await asyncio.to_thread(_release_local_lock_sync, fh)
