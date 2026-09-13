@@ -434,6 +434,7 @@ def ensure_guild(econ, guild):
 def new_acct(name):
     return {
         "name": name, "bal": get_setting("starting_bal", starting_bal), "bank": 0,
+        "hide_bank": False,
         "last_daily": 0, "last_work": 0, "last_rob": 0, "last_crime": 0, "last_beg": 0,
         "loan": None, "shield_until": 0, "charm": False, "insurance": False, "lockpick": False,
         "fake_id": False, "getaway_bike": False, "clover": False, "piggy_bank": False, "midas": False,
@@ -520,6 +521,7 @@ def acct(econ, guild, member):
         u.setdefault("last_crime", 0)
         u.setdefault("last_beg", 0)
         u.setdefault("bank", 0)
+        u.setdefault("hide_bank", False)
         u.setdefault("loan", None)
         u.setdefault("shield_until", 0)
         u.setdefault("charm", False)
@@ -1056,7 +1058,15 @@ async def do_balance(ctx, who):
     a = acct(econ, space, who)
     save(econ, econ_file_for(space))
     desc = chips(a["bal"])
-    if a.get("bank"):
+    if a.get("hide_bank"):
+        # hidden means hidden to EVERYONE checking via !bal/!balance,
+        # including the account owner themselves - it always reads as a
+        # plain 0 here, with no "(hidden)" tag or other tell, regardless
+        # of the real number. The dashboard is unaffected by this flag
+        # (it reads economy.json directly) and only staff have access to
+        # it, so the real amount is still visible there.
+        desc += f"\nbank: {chips(0)}"
+    elif a.get("bank"):
         desc += f"\nbank: {chips(a['bank'])}"
     loan = a.get("loan")
     if loan:
@@ -1075,6 +1085,29 @@ async def balance(ctx, user: Option(discord.Member, "who", required=False) = Non
 @bot.command(name="balance", aliases=["bal"])
 async def balance_cmd(ctx, user: discord.Member = None):
     await do_balance(ctx, user or ctx.author)
+
+
+async def do_hide(ctx):
+    space = get_space(ctx)
+    econ = loadEcon(econ_file_for(space))
+    a = acct(econ, space, ctx.author)
+    a["hide_bank"] = not a.get("hide_bank", False)
+    save(econ, econ_file_for(space))
+    if a["hide_bank"]:
+        msg = "🙈 your bank balance is now hidden - !bal will show it as 0 to anyone who checks, yourself included. staff can still see the real number on the dashboard."
+    else:
+        msg = "👁️ your bank balance is visible again in !bal."
+    await reply(ctx, content=msg, ephemeral=True)
+
+
+@bot.slash_command(name="hide", description="toggle hiding your bank balance from !bal")
+async def hide_slash(ctx):
+    await do_hide(ctx)
+
+
+@bot.command(name="hide")
+async def hide_cmd(ctx):
+    await do_hide(ctx)
 
 
 async def do_daily(ctx):
@@ -4121,6 +4154,10 @@ async def stats_cmd(ctx, user: discord.Member = None):
 
 
 # ================= ERROR HANDLING =================
+# Everything here is written for the PERSON who triggered it, not whoever's
+# reading the console - no "check console", no raw exception text, no
+# python-speak. The real exception/traceback still gets printed server-side
+# for whoever's watching the logs; the user just never sees any of that.
 @bot.event
 async def on_application_command_error(ctx, error):
     if isinstance(error, commands.MissingPermissions):
@@ -4128,12 +4165,18 @@ async def on_application_command_error(ctx, error):
         return
     if isinstance(error, GameChannelLocked):
         return  # already told them which channel to use - nothing more to say
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.respond(f"slow down - try that again in {round(error.retry_after)}s", ephemeral=True)
+        return
+    if isinstance(error, commands.NoPrivateMessage):
+        await ctx.respond("that only works in a server, not here", ephemeral=True)
+        return
     # print(error) alone only shows the one-line summary ("Command raised an
     # exception: TypeError: ...") - not WHERE it happened. Full traceback so
     # the actual bug is findable from the console instead of guessing.
     traceback.print_exception(type(error), error, error.__traceback__)
     try:
-        await ctx.respond("something broke, check console", ephemeral=True)
+        await ctx.respond("something went wrong on my end - try again in a bit, and let staff know if it keeps happening", ephemeral=True)
     except discord.InteractionResponded:
         pass
 
@@ -4145,13 +4188,26 @@ async def on_command_error(ctx, error):
         return
     if isinstance(error, GameChannelLocked):
         return  # already told them which channel to use - nothing more to say
-    if isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument)):
-        await ctx.send(f"check your command args - {error}")
-        return
     if isinstance(error, commands.CommandNotFound):
-        return  # dont spam chat every time someone types a normal message that starts with the prefix char
+        await ctx.send("that command doesn't exist - try `!help` to see what I can actually do")
+        return
+    if isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"slow down - try that again in {round(error.retry_after)}s")
+        return
+    if isinstance(error, commands.NoPrivateMessage):
+        await ctx.send("that only works in a server, not here")
+        return
+    if isinstance(error, commands.MemberNotFound):
+        await ctx.send(f"couldn't find anyone called `{error.argument}` - try mentioning them instead")
+        return
+    if isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(f"missing something for that command - try `!help {ctx.command}` to see how it works")
+        return
+    if isinstance(error, commands.BadArgument):
+        await ctx.send(f"that's not a valid value for that command - try `!help {ctx.command}` to see the right format")
+        return
     traceback.print_exception(type(error), error, error.__traceback__)
-    await ctx.send("something broke, check console")
+    await ctx.send("something went wrong on my end - try again in a bit, and let staff know if it keeps happening")
 
 
 if __name__ == "__main__":
