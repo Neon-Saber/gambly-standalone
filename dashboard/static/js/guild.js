@@ -335,6 +335,24 @@ async function renderModeration() {
         </tbody>
       </table></div>
       <button class="btn btn-gold" id="m-logging-save" style="margin-top:12px;">Save</button>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Bot status</h2>
+        <span class="hint">Posts a friendly check-in embed (uptime, ping, chips in circulation) and keeps editing it in place every 15 minutes. Try /status or !status anytime for an on-demand read, channel or no channel.</span>
+      </div>
+      <div class="switch-row" style="margin-bottom:16px;">
+        <label class="switch"><input type="checkbox" id="st-enabled" ${STATE.status_enabled ? 'checked' : ''}><span class="track"></span></label>
+        <span class="lbl">Post the recurring status embed</span>
+      </div>
+      <div class="field-grid">
+        <div class="field">
+          <label>Status channel</label>
+          <select id="st-channel"><option value="">Loading channels…</option></select>
+        </div>
+      </div>
+      <button class="btn btn-gold" id="st-save" style="margin-top:12px;">Save</button>
     </div>`;
 
   document.getElementById('m-staff-save').addEventListener('click', async () => {
@@ -357,6 +375,14 @@ async function renderModeration() {
     if (r) { toast('Saved.', 'ok'); refresh(); }
   });
 
+  document.getElementById('st-save').addEventListener('click', async () => {
+    const r = await apiPost(`/api/guild/${GID}/status_config`, {
+      status_enabled: document.getElementById('st-enabled').checked,
+      status_channel_id: document.getElementById('st-channel').value || null,
+    });
+    if (r) { toast('Saved.', 'ok'); refresh(); }
+  });
+
   const [roles, channels] = await Promise.all([
     apiGet(`/api/guild/${GID}/roles`),
     apiGet(`/api/guild/${GID}/channels`),
@@ -369,6 +395,7 @@ async function renderModeration() {
   document.getElementById('m-staff-role').innerHTML = roleOptions(STATE.staff_role_id);
   document.getElementById('m-ticket-category').innerHTML = categoryOptions(STATE.ticket_category_id);
   document.getElementById('m-ticket-ping').innerHTML = roleOptions(STATE.ticket_ping_role_id);
+  document.getElementById('st-channel').innerHTML = channelOptions(STATE.status_channel_id);
 
   document.querySelectorAll('#tab-moderation tr[data-log]').forEach((row) => {
     const key = row.dataset.log;
