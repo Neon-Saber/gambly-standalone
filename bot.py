@@ -1,4 +1,4 @@
-import json, os, random, time, asyncio, traceback, re
+import json, os, random, time, asyncio, traceback, re, contextlib
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -632,16 +632,39 @@ def is_banned(member, space):
 # list of embeds instead of a single `embed`. only one of embed/embeds should
 # be given at a time.
 async def reply(ctx, content=None, embed=None, embeds=None, view=None, ephemeral=False):
+    # BUG FIX: this used to not return/track the sent message at all, so
+    # every game view (HiLo/BJ/Mines/Duel/AllIn) had no way to reach its own
+    # message later. That's what made a game "stop responding" once its
+    # view's timeout elapsed (45s/60s/120s) - discord.py silently stops
+    # routing button clicks to a timed-out view, but with no on_timeout
+    # handler AND no message reference to edit even if one existed, the
+    # buttons just sat there looking clickable forever with nothing behind
+    # them. This gets busier-looking the more concurrent activity there is,
+    # since players are more likely to get pulled into other commands and
+    # wander past their own game's timeout window before clicking back in -
+    # but the root cause is the dead view, not the traffic itself.
+    #
+    # ctx.respond() (slash commands) doesn't reliably hand back a real
+    # discord.Message the same way ctx.send() (prefix commands) does across
+    # pycord versions/paths, so original_response() is used to normalize
+    # both to an editable Message.
     if hasattr(ctx, "respond"):
         if embeds is not None:
             await ctx.respond(content=content, embeds=embeds, view=view, ephemeral=ephemeral)
         else:
             await ctx.respond(content=content, embed=embed, view=view, ephemeral=ephemeral)
+        try:
+            msg = await ctx.interaction.original_response()
+        except Exception:
+            msg = None
     else:
         if embeds is not None:
-            await ctx.send(content=content, embeds=embeds, view=view)
+            msg = await ctx.send(content=content, embeds=embeds, view=view)
         else:
-            await ctx.send(content=content, embed=embed, view=view)
+            msg = await ctx.send(content=content, embed=embed, view=view)
+    if view is not None:
+        view.message = msg
+    return msg
 
 
 def need_guild(ctx):
@@ -2613,8 +2636,15 @@ class AllInConfirm(discord.ui.View):
         return True
 
     async def on_timeout(self):
+        # disabling in memory alone does nothing to the live Discord message
+        # (that only matters on the next edit_message call, which never
+        # comes for a game nobody clicked) - has to actually push an edit
+        # here or the buttons just sit there looking clickable forever.
         for c in self.children:
             c.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(content="all-in offer expired, nothing was wagered.", view=self)
 
     @discord.ui.button(label="Yes, send it all", style=discord.ButtonStyle.danger)
     async def confirm(self, b, i):
@@ -2743,6 +2773,20 @@ class HiLo(discord.ui.View):
 
     def show(self):
         return f"pot: {chips(self.pot)}\ncurrent card: {card_disp(self.current)}\nhigher, lower, or cash out?"
+
+    async def on_timeout(self):
+        # no on_timeout meant a stale hilo game just kept showing live
+        # buttons forever after 45s - clicking one did nothing (discord.py
+        # stops routing interactions to a timed-out view) with zero feedback
+        # to the player that the game had already ended. No money's at risk
+        # here either way - hilo never escrows the bet up front, only
+        # touching balance on a wrong guess or cash out - so a timeout is
+        # just a no-op abandonment, safe to close out silently.
+        for c in self.children:
+            c.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(content=self.show() + "\n\n⏱️ timed out, game closed - nothing was wagered.", view=self)
 
     async def guess(self, i, direction):
         new = random.randint(2, 14)
@@ -2903,6 +2947,17 @@ class BJ(discord.ui.View):
             dside = f"{self.dealer[0]} ?"
         return f"you: {' '.join(str(c) for c in self.me)} ({handtotal(self.me)})\ndealer: {dside}\nbet: {chips(self.bet)}"
 
+    async def on_timeout(self):
+        # same dead-view problem as hilo/mines - a hand left open past 60s
+        # otherwise sits there with live-looking Hit/Stand buttons that
+        # silently do nothing. Bet isn't taken until the hand resolves
+        # (see payout()), so an abandoned hand costs nothing - just close it.
+        for c in self.children:
+            c.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(content=self.show(True) + "\n\n⏱️ timed out, hand closed - nothing was wagered.", view=self)
+
     async def payout(self, i, msg, delta):
         # reload fresh instead of the econ snapshot from whenever this hand
         # started - a blackjack hand can sit open a while waiting on
@@ -3022,6 +3077,17 @@ class DuelConfirm(discord.ui.View):
             await i.response.send_message("this challenge isnt for you", ephemeral=True)
             return False
         return True
+
+    async def on_timeout(self):
+        # left unhandled, an unanswered duel challenge kept showing live
+        # Accept/Decline buttons forever - clicking either did nothing once
+        # the 60s view timeout hit. Chips aren't touched until Accept
+        # resolves the duel, so a timeout is a safe no-op to just close out.
+        for c in self.children:
+            c.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(content="duel challenge expired, nothing was wagered.", view=self)
 
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success)
     async def accept(self, b, i):
@@ -3326,6 +3392,21 @@ class MinesGame(discord.ui.View):
 
     def show(self):
         return f"bet {chips(self.amount)} | {self.mine_count} mines | multiplier {self.multiplier:.2f}x\npick a tile or cash out"
+
+    async def on_timeout(self):
+        # a mines board can sit open up to 120s - the longest window of any
+        # game here, so it was also the most likely to show this bug: live-
+        # looking tiles/cash-out button that silently do nothing once the
+        # view times out. Nothing's escrowed until a tile hit or cash-out
+        # actually resolves, so an abandoned board costs nothing to close.
+        if self.over:
+            return
+        self.over = True
+        for c in self.children:
+            c.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(content=self.show() + "\n\n⏱️ timed out, board closed - nothing was wagered.", view=self)
 
 
 async def do_mines(ctx, amount, mine_count):
