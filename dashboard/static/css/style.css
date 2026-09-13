@@ -143,6 +143,18 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
 .topbar-left { display: flex; align-items: center; gap: 10px; }
 .topbar-left svg { width: 20px; height: 20px; }
 .topbar-left span { font-family: var(--font-display); font-size: 16px; }
+.topbar-brand {
+  display: flex; align-items: center; gap: 10px;
+  text-decoration: none !important;
+  color: var(--ink) !important;
+  padding: 4px 8px; margin: -4px -8px;
+  border-radius: var(--radius);
+  transition: background 150ms ease, transform 150ms ease;
+}
+.topbar-brand:hover { background: var(--bg-2); }
+.topbar-brand:hover svg { transform: rotate(-8deg) scale(1.08); }
+.topbar-brand:active { transform: scale(0.97); }
+.topbar-brand svg { transition: transform 220ms ease; }
 .topbar-crumb { color: var(--ink-faint); font-size: 13px; }
 .topbar-crumb b { color: var(--ink); font-weight: 500; }
 .topbar-right { display: flex; align-items: center; gap: 14px; }
@@ -219,6 +231,12 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; }
 }
 .sidebar .nav-item:hover { background: var(--bg-2); color: var(--ink); }
 .sidebar .nav-item.active { background: var(--bg-3); color: var(--gold); font-weight: 500; }
+.sidebar a, .sidebar button.nav-item { transition: background 150ms ease, color 150ms ease; }
+.tab-panel.tab-anim-in { animation: tabFadeIn 200ms ease; }
+@keyframes tabFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 .sidebar .nav-divider { height: 1px; background: var(--line-soft); margin: 10px 4px; }
 .sidebar .nav-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); padding: 10px 12px 4px; }
 .guild-main { flex: 1; min-width: 0; padding: 26px 28px 60px; overflow-y: auto; }
@@ -279,6 +297,71 @@ input:focus, select:focus, button:focus-visible {
 .switch input:checked + .track::before { transform: translateX(17px); background: var(--gold); }
 .switch-row { display: flex; align-items: center; gap: 10px; }
 .switch-row .lbl { font-size: 13px; }
+
+/* ---------------- searchable combobox (channel/role pickers) ---------------- */
+/* Wraps the real <select> (kept in the DOM, just hidden) - see
+   enhanceSelect() in guild.js. Looks like a normal select until opened. */
+.combo { position: relative; width: 100%; }
+.combo-trigger {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; background: var(--bg-0); border: 1px solid var(--line); color: var(--ink);
+  padding: 8px 10px; border-radius: var(--radius); font-size: 13px; cursor: pointer;
+  text-align: left;
+}
+.combo-trigger:hover { border-color: #3a4d43; }
+.combo.open .combo-trigger { border-color: var(--gold-dim); outline: 2px solid var(--gold-dim); outline-offset: 1px; }
+.combo-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo-caret { color: var(--ink-faint); font-size: 11px; flex-shrink: 0; transition: transform 120ms ease; }
+.combo.open .combo-caret { transform: rotate(180deg); }
+.combo-panel {
+  display: none; position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; min-width: 240px; max-width: 320px;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-lg);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5); padding: 10px;
+}
+.combo.open .combo-panel { display: block; }
+.combo-search input {
+  width: 100%; background: var(--bg-0); border: 1px solid var(--line); color: var(--ink);
+  padding: 7px 9px; border-radius: var(--radius); font-size: 13px;
+}
+.combo-alpha { display: flex; flex-wrap: wrap; gap: 3px; margin: 8px 0; }
+.combo-alpha button {
+  width: 20px; height: 20px; padding: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 10.5px; border-radius: 4px; border: 1px solid var(--line-soft); background: var(--bg-1);
+  color: var(--ink-dim); cursor: pointer;
+}
+.combo-alpha button:hover { border-color: var(--gold-dim); color: var(--gold); }
+.combo-list { max-height: 220px; overflow-y: auto; border-top: 1px solid var(--line-soft); padding-top: 6px; }
+.combo-opt { padding: 7px 8px; border-radius: var(--radius); font-size: 13px; cursor: pointer; }
+.combo-opt:hover, .combo-opt.hl { background: var(--bg-3); }
+.combo-opt.sel { color: var(--gold); font-weight: 500; }
+.combo-empty { padding: 10px 8px; font-size: 12.5px; color: var(--ink-faint); text-align: center; }
+
+/* ---------------- sidebar settings search ---------------- */
+.settings-search { position: relative; padding: 0 4px 12px; }
+.settings-search input {
+  width: 100%; background: var(--bg-0); border: 1px solid var(--line); color: var(--ink);
+  padding: 7px 9px; border-radius: var(--radius); font-size: 12.5px;
+}
+.settings-search input:focus { outline: 2px solid var(--gold-dim); outline-offset: 1px; border-color: var(--gold-dim); }
+.settings-search-results {
+  position: absolute; z-index: 45; top: calc(100% + 2px); left: 4px; right: 4px;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5); padding: 4px; max-height: 280px; overflow-y: auto;
+}
+.settings-search-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 7px 8px; border-radius: 5px; font-size: 12.5px; cursor: pointer; color: var(--ink);
+}
+.settings-search-item:hover, .settings-search-item.hl { background: var(--bg-3); }
+.settings-search-item .tab-tag { font-size: 10px; color: var(--ink-faint); text-transform: capitalize; flex-shrink: 0; }
+.settings-search-empty { padding: 8px; font-size: 12px; color: var(--ink-faint); text-align: center; }
+
+/* brief highlight pulse for wherever the settings search jumps you to */
+@keyframes searchFlash {
+  0% { box-shadow: 0 0 0 0 rgba(200, 162, 77, 0.55); border-color: var(--gold); }
+  100% { box-shadow: 0 0 0 10px rgba(200, 162, 77, 0); border-color: var(--line); }
+}
+.search-flash { animation: searchFlash 1100ms ease-out; }
 
 /* ---------------- table ---------------- */
 .table-wrap { overflow-x: auto; }

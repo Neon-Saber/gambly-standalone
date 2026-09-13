@@ -63,6 +63,128 @@ function pickerOptions(list, selectedId, opts) {
   return `<option value="">${emptyLabel}</option>${missing}${rendered}`;
 }
 
+// Strip a channel/role option's decorative prefix ("#", "🔊 ", "・" etc.)
+// down to the first real letter/digit, so the A-Z jump strip matches the
+// actual channel/role name instead of every option landing under "the
+// symbol bucket" because pickerOptions() prefixed it with "#" or "🔊 ".
+function comboSortKey(text) {
+  return text.replace(/^[^a-z0-9]+/i, '').toLowerCase();
+}
+
+// Turns an already-populated <select> into a searchable combobox: click to
+// open a small panel with a text search box, an A-Z jump strip, and the
+// option list. The real <select> stays in the DOM (just visually hidden)
+// so it keeps being the source of truth - every existing `.value` read,
+// `.value =` write, row.querySelector('[data-...]'), and Save handler
+// elsewhere in this file keeps working exactly as before; this only
+// changes how the option gets picked. Call it fresh any time a select's
+// <option>s are (re)assigned - a full tab re-render, a per-row channel
+// list arriving after fetch, or a brand new row from an "+ Add" button.
+function enhanceSelect(select) {
+  if (select.dataset.comboReady) {
+    if (select._comboRefresh) select._comboRefresh();
+    return;
+  }
+  select.dataset.comboReady = '1';
+
+  // carry over any inline sizing (e.g. style="min-width:180px;") so the
+  // combo occupies the same space the raw <select> would have.
+  const carriedStyle = select.getAttribute('style') || '';
+  select.style.display = 'none';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'combo';
+  if (carriedStyle) wrap.style.cssText = carriedStyle;
+
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'combo-trigger';
+  trigger.innerHTML = `<span class="combo-label"></span><span class="combo-caret">⌄</span>`;
+  const label = trigger.querySelector('.combo-label');
+
+  const panel = document.createElement('div');
+  panel.className = 'combo-panel';
+  panel.innerHTML = `
+    <div class="combo-search"><input type="text" placeholder="Search…"></div>
+    <div class="combo-alpha"><button type="button" data-letter="">×</button>${
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((ch) => `<button type="button" data-letter="${ch}">${ch}</button>`).join('')
+    }</div>
+    <div class="combo-list"></div>`;
+  const search = panel.querySelector('.combo-search input');
+  const list = panel.querySelector('.combo-list');
+
+  wrap.appendChild(trigger);
+  wrap.appendChild(panel);
+  select.insertAdjacentElement('afterend', wrap);
+
+  let mode = 'contains'; // 'contains' while typing, 'starts' after an A-Z click
+
+  function currentLabel() {
+    const opt = select.options[select.selectedIndex];
+    return opt ? opt.textContent : '';
+  }
+
+  function renderList() {
+    const q = search.value.trim().toLowerCase();
+    const opts = Array.from(select.options);
+    const filtered = !q ? opts : opts.filter((o) => {
+      const text = o.textContent.toLowerCase();
+      return mode === 'starts' ? comboSortKey(o.textContent).startsWith(q) : text.includes(q);
+    });
+    list.innerHTML = filtered.length
+      ? filtered.map((o, i) => `<div class="combo-opt${o.value === select.value ? ' sel' : ''}${i === 0 ? ' hl' : ''}" data-value="${escapeHtml(o.value)}">${escapeHtml(o.textContent)}</div>`).join('')
+      : `<div class="combo-empty">No matches</div>`;
+    list.querySelectorAll('.combo-opt').forEach((row) => {
+      row.addEventListener('click', () => pick(row.dataset.value));
+    });
+  }
+
+  function pick(value) {
+    select.value = value;
+    select.dispatchEvent(new Event('change'));
+    label.textContent = currentLabel();
+    closePanel();
+  }
+
+  function openPanel() {
+    if (wrap.classList.contains('open')) return;
+    wrap.classList.add('open');
+    mode = 'contains';
+    search.value = '';
+    renderList();
+    setTimeout(() => search.focus(), 0);
+    document.addEventListener('mousedown', onOutside);
+  }
+  function closePanel() {
+    wrap.classList.remove('open');
+    document.removeEventListener('mousedown', onOutside);
+  }
+  function onOutside(e) {
+    if (!wrap.contains(e.target)) closePanel();
+  }
+
+  trigger.addEventListener('click', () => {
+    wrap.classList.contains('open') ? closePanel() : openPanel();
+  });
+  search.addEventListener('input', () => { mode = 'contains'; renderList(); });
+  search.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { closePanel(); trigger.focus(); }
+    else if (e.key === 'Enter') { e.preventDefault(); const hl = list.querySelector('.combo-opt'); if (hl) pick(hl.dataset.value); }
+  });
+  panel.querySelectorAll('.combo-alpha button').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      mode = btn.dataset.letter ? 'starts' : 'contains';
+      search.value = btn.dataset.letter;
+      renderList();
+      search.focus();
+    });
+  });
+
+  label.textContent = currentLabel();
+  select._comboRefresh = () => { label.textContent = currentLabel(); if (wrap.classList.contains('open')) renderList(); };
+}
+
 async function init() {
   STATE = await apiGet(`/api/guild/${GID}`);
   if (!STATE) return;
@@ -278,6 +400,7 @@ async function renderSettings() {
 
   const roles = await apiGet(`/api/guild/${GID}/roles`);
   document.getElementById('s-manager-role').innerHTML = pickerOptions(roles, STATE.manager_role);
+  enhanceSelect(document.getElementById('s-manager-role'));
 }
 
 // -------------------------------------------------------- moderation & logging
@@ -396,10 +519,16 @@ async function renderModeration() {
   document.getElementById('m-ticket-category').innerHTML = categoryOptions(STATE.ticket_category_id);
   document.getElementById('m-ticket-ping').innerHTML = roleOptions(STATE.ticket_ping_role_id);
   document.getElementById('st-channel').innerHTML = channelOptions(STATE.status_channel_id);
+  enhanceSelect(document.getElementById('m-staff-role'));
+  enhanceSelect(document.getElementById('m-ticket-category'));
+  enhanceSelect(document.getElementById('m-ticket-ping'));
+  enhanceSelect(document.getElementById('st-channel'));
 
   document.querySelectorAll('#tab-moderation tr[data-log]').forEach((row) => {
     const key = row.dataset.log;
-    row.querySelector('[data-log-channel]').innerHTML = channelOptions(STATE.logging[key].channel);
+    const sel = row.querySelector('[data-log-channel]');
+    sel.innerHTML = channelOptions(STATE.logging[key].channel);
+    enhanceSelect(sel);
   });
 }
 
@@ -461,7 +590,9 @@ async function renderGameChannels() {
 
   document.querySelectorAll('#tab-games tr[data-game]').forEach((row) => {
     const g = row.dataset.game;
-    row.querySelector('[data-game-channel]').innerHTML = channelOptions((STATE.game_channels || {})[g]);
+    const sel = row.querySelector('[data-game-channel]');
+    sel.innerHTML = channelOptions((STATE.game_channels || {})[g]);
+    enhanceSelect(sel);
   });
 }
 
@@ -570,6 +701,9 @@ async function renderLeveling() {
   document.getElementById('mc-channel').innerHTML = pickerOptions(
     channels ? channels.voice : null, STATE.member_count_channel_id, { prefix: '🔊 ' }
   );
+  enhanceSelect(document.getElementById('w-channel'));
+  enhanceSelect(document.getElementById('l-channel'));
+  enhanceSelect(document.getElementById('mc-channel'));
 
   document.getElementById('w-save').addEventListener('click', async () => {
     const r = await apiPost(`/api/guild/${GID}/welcome_config`, {
@@ -608,6 +742,7 @@ async function renderLeveling() {
       <td><button class="btn btn-sm btn-danger lr-remove">Remove</button></td>`;
     tr.querySelector('.lr-remove').addEventListener('click', () => tr.remove());
     rowsEl.appendChild(tr);
+    enhanceSelect(tr.querySelector('.lr-role'));
   };
   const existing = Object.entries(STATE.level_roles || {}).sort((a, b) => Number(a[0]) - Number(b[0]));
   if (existing.length) {
@@ -728,6 +863,7 @@ async function renderRebirths() {
       <td><button class="btn btn-sm btn-danger rr-remove">Remove</button></td>`;
     tr.querySelector('.rr-remove').addEventListener('click', () => tr.remove());
     rowsEl.appendChild(tr);
+    enhanceSelect(tr.querySelector('.rr-role'));
   };
   const existing = Object.entries(STATE.rebirth_roles || {}).sort((a, b) => Number(a[0]) - Number(b[0]));
   if (existing.length) {
@@ -813,4 +949,103 @@ async function refresh() {
   renderBounties();
 }
 
+// -------------------------------------------------------- settings search
+// A flat index of "findable" settings across every tab. Doesn't need to be
+// exhaustive - just enough that typing a rough term ("ticket", "status",
+// "prefix", "member count") gets you to the right card without hunting
+// through the sidebar. `sel` is scoped to that tab's panel at lookup time
+// (#tab-<tab> <sel>), so plain ids/classes are safe even where several
+// tabs happen to reuse one (e.g. every card).
+const SETTINGS_INDEX = [
+  { label: 'Bulk grant chips', tab: 'players', sel: '#bulk-amount' },
+  { label: 'Export players CSV', tab: 'players', sel: '.card a[href*="export.csv"]' },
+  { label: 'Command prefix', tab: 'settings', sel: '#s-prefix' },
+  { label: 'Manager role', tab: 'settings', sel: '#s-manager-role' },
+  { label: 'Jackpot', tab: 'settings', sel: '#s-jackpot' },
+  { label: 'Tax percentage', tab: 'settings', sel: '#s-tax' },
+  { label: 'Server pot', tab: 'settings', sel: '#s-pot' },
+  { label: 'Lottery pot', tab: 'settings', sel: '#s-lottery' },
+  { label: 'Test mode', tab: 'settings', sel: '#s-testmode' },
+  { label: 'Staff role', tab: 'moderation', sel: '#m-staff-role' },
+  { label: 'Ticket category', tab: 'moderation', sel: '#m-ticket-category' },
+  { label: 'Ticket ping role', tab: 'moderation', sel: '#m-ticket-ping' },
+  { label: 'Moderation action logs', tab: 'moderation', sel: 'tr[data-log="mod"]' },
+  { label: 'Ticket transcript logs', tab: 'moderation', sel: 'tr[data-log="ticket"]' },
+  { label: 'User report logs', tab: 'moderation', sel: 'tr[data-log="report"]' },
+  { label: 'Message edit/delete logs', tab: 'moderation', sel: 'tr[data-log="message"]' },
+  { label: 'Withdrawal logs', tab: 'moderation', sel: 'tr[data-log="withdraw"]' },
+  { label: 'Deposit logs', tab: 'moderation', sel: 'tr[data-log="deposit"]' },
+  { label: 'Bot status embed', tab: 'moderation', sel: '#st-enabled' },
+  { label: 'Bot status channel', tab: 'moderation', sel: '#st-channel' },
+  { label: 'Per-game channels', tab: 'games', sel: '#tab-games .card' },
+  { label: 'Custom server env', tab: 'games', sel: '#custom-env-box' },
+  { label: 'Welcome messages', tab: 'leveling', sel: '#w-enabled' },
+  { label: 'Welcome channel', tab: 'leveling', sel: '#w-channel' },
+  { label: 'Welcome message template', tab: 'leveling', sel: '#w-message' },
+  { label: 'Leveling / XP', tab: 'leveling', sel: '#l-enabled' },
+  { label: 'Level-up announce channel', tab: 'leveling', sel: '#l-channel' },
+  { label: 'Level-up message template', tab: 'leveling', sel: '#l-message' },
+  { label: 'Level roles', tab: 'leveling', sel: '#lr-rows' },
+  { label: 'Live member count', tab: 'leveling', sel: '#mc-enabled' },
+  { label: 'Member count voice channel', tab: 'leveling', sel: '#mc-channel' },
+  { label: 'Member count name template', tab: 'leveling', sel: '#mc-template' },
+  { label: 'Bounties', tab: 'bounties', sel: '#b-uid' },
+  { label: 'Rebirth roles', tab: 'rebirths', sel: '#rr-rows' },
+  { label: 'Activity log', tab: 'activity', sel: '#a-search' },
+  { label: 'Remove bot from server', tab: 'danger', sel: '#leave-btn' },
+];
+
+function initSettingsSearch() {
+  const input = document.getElementById('settings-search-input');
+  const results = document.getElementById('settings-search-results');
+  if (!input) return;
+
+  function renderResults(q) {
+    q = q.trim().toLowerCase();
+    if (!q) { results.style.display = 'none'; results.innerHTML = ''; return; }
+    const matches = SETTINGS_INDEX.filter((e) => e.label.toLowerCase().includes(q)).slice(0, 8);
+    results.innerHTML = matches.length
+      ? matches.map((e, i) => `<div class="settings-search-item${i === 0 ? ' hl' : ''}" data-idx="${SETTINGS_INDEX.indexOf(e)}">${escapeHtml(e.label)}<span class="tab-tag">${e.tab}</span></div>`).join('')
+      : `<div class="settings-search-empty">No matches</div>`;
+    results.style.display = '';
+  }
+
+  function go(entry) {
+    if (!entry) return;
+    showTab(entry.tab);
+    input.value = '';
+    results.style.display = 'none';
+    input.blur();
+    setTimeout(() => {
+      const target = document.querySelector('#tab-' + entry.tab + ' ' + entry.sel);
+      if (!target) return;
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const flashEl = target.closest('.card') || target;
+      flashEl.classList.remove('search-flash');
+      void flashEl.offsetWidth; // restart animation if the same target is hit twice in a row
+      flashEl.classList.add('search-flash');
+    }, 30);
+  }
+
+  input.addEventListener('input', () => renderResults(input.value));
+  input.addEventListener('focus', () => { if (input.value.trim()) renderResults(input.value); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const first = results.querySelector('.settings-search-item');
+      if (first) go(SETTINGS_INDEX[Number(first.dataset.idx)]);
+    } else if (e.key === 'Escape') {
+      results.style.display = 'none';
+      input.blur();
+    }
+  });
+  results.addEventListener('click', (e) => {
+    const item = e.target.closest('.settings-search-item');
+    if (item) go(SETTINGS_INDEX[Number(item.dataset.idx)]);
+  });
+  document.addEventListener('mousedown', (e) => {
+    if (!e.target.closest('.settings-search')) results.style.display = 'none';
+  });
+}
+
 init();
+initSettingsSearch();

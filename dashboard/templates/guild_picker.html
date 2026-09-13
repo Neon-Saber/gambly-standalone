@@ -10,8 +10,10 @@
 <div class="shell" style="flex-direction:column;">
   <div class="topbar">
     <div class="topbar-left">
-      {% include "_mark.html" %}
-      <span>{{ bot_name }}</span>
+      <a class="topbar-brand" href="{{ url_for('app_routes.dashboard_home') }}">
+        {% include "_mark.html" %}
+        <span>{{ bot_name }}</span>
+      </a>
     </div>
     <div class="topbar-right">
       {% if bot_admin %}<a class="btn btn-sm" href="{{ url_for('app_routes.bot_admin_home') }}">Bot admin</a>{% endif %}
@@ -29,10 +31,13 @@
     </div>
 
     {% if guilds %}
-    <div class="guild-grid">
+    <div class="input-row" style="max-width:340px;margin-bottom:18px;">
+      <input type="search" id="server-search" placeholder="Search your servers…" autocomplete="off">
+    </div>
+    <div class="guild-grid" id="guild-grid">
       {% for g in guilds %}
         {% if g.installed %}
-        <a class="guild-card" href="{{ url_for('app_routes.dashboard_guild', gid=g.id) }}">
+        <a class="guild-card" href="{{ url_for('app_routes.dashboard_guild', gid=g.id) }}" data-name="{{ g.name|lower }}">
           <div class="guild-icon">{% if g.icon %}<img src="{{ g.icon }}" alt="">{% else %}{{ g.name[:1] }}{% endif %}</div>
           <div class="guild-meta">
             <div class="name">{{ g.name }}</div>
@@ -40,7 +45,7 @@
           </div>
         </a>
         {% else %}
-        <a class="guild-card disabled" href="{{ invite_url }}" target="_blank" rel="noopener">
+        <a class="guild-card disabled" href="{{ invite_url }}" target="_blank" rel="noopener" data-name="{{ g.name|lower }}">
           <div class="guild-icon">{% if g.icon %}<img src="{{ g.icon }}" alt="">{% else %}{{ g.name[:1] }}{% endif %}</div>
           <div class="guild-meta">
             <div class="name">{{ g.name }}</div>
@@ -50,6 +55,7 @@
         {% endif %}
       {% endfor %}
     </div>
+    <div class="empty" id="guild-search-empty" style="display:none;">No servers match your search.</div>
     {% else %}
     <div class="empty">You don't manage any servers on Discord yet. Once you have Manage Server permission somewhere, it'll show up here.</div>
     {% endif %}
@@ -59,5 +65,23 @@
   <a href="{{ url_for('app_routes.tos') }}">Terms</a>
   <a href="{{ url_for('app_routes.privacy') }}">Privacy</a>
 </div>
+<script>
+(function () {
+  const input = document.getElementById('server-search');
+  if (!input) return;
+  const cards = Array.from(document.querySelectorAll('#guild-grid .guild-card'));
+  const emptyMsg = document.getElementById('guild-search-empty');
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    let shown = 0;
+    cards.forEach((c) => {
+      const match = !q || (c.dataset.name || '').includes(q);
+      c.style.display = match ? '' : 'none';
+      if (match) shown++;
+    });
+    emptyMsg.style.display = shown ? 'none' : '';
+  });
+})();
+</script>
 </body>
 </html>
