@@ -1,0 +1,181 @@
+"""
+Bot status embed - a periodic "how's it going" check-in posted to a channel,
+plus an on-demand /status and !status command that works anywhere without
+needing that channel configured at all.
+
+Fully dashboard-driven (Moderation & Logging tab), same one-time-env-default-
+then-dashboard pattern as welcome/leveling/member-count: set STATUS_CHANNEL_ID
+in .env to seed a server's channel the first time its config is created,
+after that the dashboard owns it. Set/change it anytime from the dashboard
+without a restart.
+
+THE "make it look human" PART: this deliberately isn't a field:value stats
+dump (uptime: 3:12:00, ping: 42ms, guilds: 1). It's one written paragraph
+with a little variance built in (a handful of opener lines and ping
+commentary to pick from) so it doesn't read like the exact same templated
+line every single time, the way a person giving a quick verbal status update
+wouldn't either.
+
+The periodic post EDITS one message in place (like server_stats' member-
+count channel) rather than sending a new one every cycle, so a channel with
+this enabled doesn't slowly fill up with old status posts. If that message
+ever gets deleted or the channel gets swapped, this just posts a fresh one
+and starts tracking that instead - see status_message_id in config_schema.py.
+"""
+import random
+import time
+from pathlib import Path
+
+import discord
+from discord.ext import commands, tasks
+
+import config_schema as cfgschema
+import cog_utils as cu
+import embeds
+import store
+
+ECON_FILE = Path(__file__).parent.parent / "economy.json"
+UPDATE_INTERVAL_MINUTES = 15
+
+OPENERS = [
+    "still here, still dealing cards.",
+    "quick check-in from the house.",
+    "everything's ticking along fine.",
+    "just doing my rounds.",
+    "nothing to report - business as usual.",
+    "checking in, all's well on my end.",
+]
+
+PING_GOOD = ["feeling snappy", "quick as ever", "running smooth"]
+PING_OK = ["a little sluggish, but nothing worth worrying about", "not the fastest right now, still working fine"]
+PING_BAD = ["dragging a bit - might be discord's side, might be worth a peek at the VM if it keeps up"]
+
+
+def _human_uptime(seconds):
+    seconds = int(seconds)
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, _ = divmod(seconds, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if not days and minutes:
+        parts.append(f"{minutes}m")
+    if not parts:
+        parts.append("under a minute")
+    return " ".join(parts)
+
+
+def _chips(n):
+    return f"🪙 {n:,} chips"
+
+
+class BotStatus(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.start_time = time.time()
+        self.status_loop.start()
+
+    def cog_unload(self):
+        self.status_loop.cancel()
+
+    def _economy_snapshot(self, guild):
+        econ = store.load(ECON_FILE)
+        users = econ.get(str(guild.id), {}).get("users", {})
+        total_chips = sum(u.get("bal", 0) + u.get("bank", 0) for u in users.values())
+        return len(users), total_chips
+
+    async def _build_embed(self, guild):
+        ping_ms = round(self.bot.latency * 1000)
+        if ping_ms < 150:
+            ping_note = random.choice(PING_GOOD)
+        elif ping_ms < 350:
+            ping_note = random.choice(PING_OK)
+        else:
+            ping_note = random.choice(PING_BAD)
+
+        player_count, total_chips = self._economy_snapshot(guild)
+        member_count = sum(1 for m in guild.members if not m.bot)
+        uptime = _human_uptime(time.time() - self.start_time)
+        plural = "s" if player_count != 1 else ""
+
+        description = (
+            f"{random.choice(OPENERS)}\n\n"
+            f"I've been up for **{uptime}**, keeping an eye on **{member_count}** {'person' if member_count == 1 else 'people'} here, "
+            f"{ping_note} at **{ping_ms}ms**.\n\n"
+            f"the house is holding **{_chips(total_chips)}** across **{player_count}** player{plural}' balances right now."
+        )
+        return embeds.bot_status_embed(guild, description)
+
+    async def _sync_guild(self, guild):
+        all_cfg = cfgschema.load_cfg()
+        g_cfg = cfgschema.ensure_guild(all_cfg, guild.id, guild.name)
+        if not g_cfg.get("status_enabled"):
+            return
+        channel_id = g_cfg.get("status_channel_id")
+        if not channel_id:
+            print(f"[bot_status] enabled in '{guild.name}' but no channel is set - "
+                  f"pick one in the dashboard's Moderation & Logging tab")
+            return
+        channel, err = await cu.resolve_channel(guild, channel_id)
+        if err:
+            print(f"[bot_status] '{guild.name}': {err}")
+            return
+
+        embed = await self._build_embed(guild)
+
+        msg = None
+        msg_id = g_cfg.get("status_message_id")
+        if msg_id:
+            try:
+                msg = await channel.fetch_message(int(msg_id))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+                msg = None  # deleted, or we can't see it anymore - fall through and post fresh
+
+        try:
+            if msg:
+                await msg.edit(embed=embed)
+            else:
+                new_msg = await channel.send(embed=embed)
+                g_cfg["status_message_id"] = str(new_msg.id)
+                cfgschema.save_cfg(all_cfg)
+        except discord.Forbidden:
+            print(f"[bot_status] no permission to post/edit in the status channel in '{guild.name}' - "
+                  f"check the bot has Send Messages/Embed Links there")
+        except discord.HTTPException as e:
+            print(f"[bot_status] failed to update the status embed in '{guild.name}': {e}")
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        for guild in self.bot.guilds:
+            await self._sync_guild(guild)
+
+    @tasks.loop(minutes=UPDATE_INTERVAL_MINUTES)
+    async def status_loop(self):
+        for guild in self.bot.guilds:
+            await self._sync_guild(guild)
+
+    @status_loop.before_loop
+    async def before_status_loop(self):
+        await self.bot.wait_until_ready()
+
+    async def _do_status(self, ctx):
+        if not ctx.guild:
+            await cu.respond(ctx, "this only makes sense inside a server", ephemeral=True)
+            return
+        embed = await self._build_embed(ctx.guild)
+        await cu.respond(ctx, embed=embed)
+
+    @commands.slash_command(name="status", description="check in on the bot")
+    async def status(self, ctx):
+        await self._do_status(ctx)
+
+    @commands.command(name="status")
+    async def status_cmd(self, ctx):
+        await self._do_status(ctx)
+
+
+def setup(bot):
+    bot.add_cog(BotStatus(bot))

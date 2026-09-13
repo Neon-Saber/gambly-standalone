@@ -220,6 +220,8 @@ def api_guild(gid):
             "member_count_enabled": g_cfg.get("member_count_enabled", False),
             "member_count_channel_id": g_cfg.get("member_count_channel_id"),
             "member_count_template": g_cfg.get("member_count_template"),
+            "status_enabled": g_cfg.get("status_enabled", False),
+            "status_channel_id": g_cfg.get("status_channel_id"),
             "logging": {
                 log_type: {
                     "enabled": g_cfg.get(f"log_{log_type}_enabled", False),
@@ -743,6 +745,35 @@ def set_member_count_config(gid):
     d.save(d.cfg_file, cfg)
     if changed:
         d.log_event((g.get("name") or gid), f"updated member count settings: {', '.join(changed)}",
+                    actor=current_user()["username"])
+    return jsonify({"ok": True})
+
+
+@app_routes.route("/api/guild/<gid>/status_config", methods=["POST"])
+@guild_access_required
+def set_status_config(gid):
+    if gid == d.DM_ID:
+        return jsonify({"error": "not available for the personal/DM economy"}), 400
+    body = request.get_json() or {}
+    cfg = d.load(d.cfg_file)
+    g = d.guild_cfg(cfg, gid)
+    changed = []
+    if "status_enabled" in body:
+        g["status_enabled"] = bool(body["status_enabled"])
+        changed.append(f"status_enabled -> {g['status_enabled']}")
+    if "status_channel_id" in body:
+        val = body["status_channel_id"]
+        new_id = str(int(val)) if val not in (None, "") else None
+        if new_id != g.get("status_channel_id"):
+            # the old status_message_id lived in the old channel - clear it
+            # so the next cycle posts a fresh message in the new channel
+            # instead of trying (and failing) to edit one that isn't there.
+            g["status_message_id"] = None
+        g["status_channel_id"] = new_id
+        changed.append(f"status_channel_id -> {g['status_channel_id']}")
+    d.save(d.cfg_file, cfg)
+    if changed:
+        d.log_event((g.get("name") or gid), f"updated bot status settings: {', '.join(changed)}",
                     actor=current_user()["username"])
     return jsonify({"ok": True})
 

@@ -178,6 +178,20 @@ def ensure_guild(all_cfg, gid, name=None):
     g.setdefault("member_count_enabled", _env_id("MEMBER_COUNT_CHANNEL_ID") is not None)
     g.setdefault("member_count_template", None)  # dashboard template; MEMBER_COUNT_TEMPLATE env wins live if set
 
+    # ---- bot status embed (cogs/bot_status.py) ----
+    # posts a friendly "how's it going" status embed to a channel and keeps
+    # editing that same message in place every 15 minutes (instead of
+    # spamming a new one each cycle) - uptime, ping, member count, chips in
+    # circulation, written in plain conversational language rather than a
+    # raw field:value dump. channel follows the usual one-time-env-default
+    # pattern. status_message_id is internal bookkeeping only (which
+    # message to edit next) - never exposed to or editable from the
+    # dashboard, and gets cleared whenever the channel changes so a stale
+    # id from the old channel doesn't get edited by mistake.
+    g.setdefault("status_channel_id", _env_id("STATUS_CHANNEL_ID"))
+    g.setdefault("status_enabled", _env_id("STATUS_CHANNEL_ID") is not None)
+    g.setdefault("status_message_id", None)
+
     # ---- logging (message / mod / report / withdraw / deposit / ticket) ----
     for log_type, env_var in LOG_TYPES.items():
         env_channel = _env_id(env_var)

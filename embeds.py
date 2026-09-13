@@ -20,6 +20,19 @@ def user_field(embed, label, user):
     embed.add_field(name=label, value=f"{user.mention} (`{user.id}`)", inline=True)
 
 
+def bot_status_embed(guild, description):
+    """Friendly "how's it going" status embed - see cogs/bot_status.py for
+    the human-toned copy this wraps. Deliberately just a title + one
+    description block (no field:value grid) so it reads like a short
+    written check-in instead of a technical stats dump."""
+    embed = _base_embed(f"{guild.name} status", COLOR_INFO)
+    embed.description = description
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+    embed.set_footer(text="checks in periodically - run /status anytime for a fresh read")
+    return embed
+
+
 def mod_action_embed(action_title, member, moderator, reason=None, color=COLOR_INFO, extra=None):
     """member/moderator can be any discord.abc.User (Member or plain User -
     ban-by-ID hands us a User, not a Member, when they're not in the server)."""

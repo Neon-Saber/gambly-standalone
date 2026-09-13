@@ -909,7 +909,7 @@ async def on_ready():
 # kept out of this file on purpose - this file is already huge, and the
 # gambling logic above shouldn't have to be scrolled past to find/edit the
 # mod, ticket, report, or logging commands.
-for _ext in ("cogs.moderation", "cogs.tickets", "cogs.reports", "cogs.logging_events", "cogs.leveling", "cogs.welcome", "cogs.server_stats", "cogs.diagnostics"):
+for _ext in ("cogs.moderation", "cogs.tickets", "cogs.reports", "cogs.logging_events", "cogs.leveling", "cogs.welcome", "cogs.server_stats", "cogs.diagnostics", "cogs.bot_status"):
     try:
         bot.load_extension(_ext)
         print(f"loaded {_ext}")
