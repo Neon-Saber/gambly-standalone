@@ -9,12 +9,14 @@ in .env to seed a server's channel the first time its config is created,
 after that the dashboard owns it. Set/change it anytime from the dashboard
 without a restart.
 
-THE "make it look human" PART: this deliberately isn't a field:value stats
-dump (uptime: 3:12:00, ping: 42ms, guilds: 1). It's one written paragraph
-with a little variance built in (a handful of opener lines and ping
-commentary to pick from) so it doesn't read like the exact same templated
-line every single time, the way a person giving a quick verbal status update
-wouldn't either.
+THE "make it look human" PART: this is short on purpose - one spoken-style
+opener line (a handful to pick from, so it's not the exact same line every
+cycle) plus just ping and version as fields. No uptime, no member count,
+no economy figures - those made it read like a stats dump instead of
+something a person would actually say when you ask "you good?".
+
+Version comes from version.py (git commit count + short hash) - nothing to
+remember to bump by hand; it just moves on its own every real deploy.
 
 The periodic post EDITS one message in place (like server_stats' member-
 count channel) rather than sending a new one every cycle, so a channel with
@@ -23,8 +25,6 @@ ever gets deleted or the channel gets swapped, this just posts a fresh one
 and starts tracking that instead - see status_message_id in config_schema.py.
 """
 import random
-import time
-from pathlib import Path
 
 import discord
 from discord.ext import commands, tasks
@@ -32,9 +32,8 @@ from discord.ext import commands, tasks
 import config_schema as cfgschema
 import cog_utils as cu
 import embeds
-import store
+import version
 
-ECON_FILE = Path(__file__).parent.parent / "economy.json"
 UPDATE_INTERVAL_MINUTES = 15
 
 OPENERS = [
@@ -51,41 +50,13 @@ PING_OK = ["a little sluggish, but nothing worth worrying about", "not the faste
 PING_BAD = ["dragging a bit - might be discord's side, might be worth a peek at the VM if it keeps up"]
 
 
-def _human_uptime(seconds):
-    seconds = int(seconds)
-    days, seconds = divmod(seconds, 86400)
-    hours, seconds = divmod(seconds, 3600)
-    minutes, _ = divmod(seconds, 60)
-    parts = []
-    if days:
-        parts.append(f"{days}d")
-    if hours:
-        parts.append(f"{hours}h")
-    if not days and minutes:
-        parts.append(f"{minutes}m")
-    if not parts:
-        parts.append("under a minute")
-    return " ".join(parts)
-
-
-def _chips(n):
-    return f"🪙 {n:,} chips"
-
-
 class BotStatus(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.start_time = time.time()
         self.status_loop.start()
 
     def cog_unload(self):
         self.status_loop.cancel()
-
-    def _economy_snapshot(self, guild):
-        econ = store.load(ECON_FILE)
-        users = econ.get(str(guild.id), {}).get("users", {})
-        total_chips = sum(u.get("bal", 0) + u.get("bank", 0) for u in users.values())
-        return len(users), total_chips
 
     async def _build_embed(self, guild):
         ping_ms = round(self.bot.latency * 1000)
@@ -96,18 +67,7 @@ class BotStatus(commands.Cog):
         else:
             ping_note = random.choice(PING_BAD)
 
-        player_count, total_chips = self._economy_snapshot(guild)
-        member_count = sum(1 for m in guild.members if not m.bot)
-        uptime = _human_uptime(time.time() - self.start_time)
-        plural = "s" if player_count != 1 else ""
-
-        description = (
-            f"{random.choice(OPENERS)}\n\n"
-            f"I've been up for **{uptime}**, keeping an eye on **{member_count}** {'person' if member_count == 1 else 'people'} here, "
-            f"{ping_note} at **{ping_ms}ms**.\n\n"
-            f"the house is holding **{_chips(total_chips)}** across **{player_count}** player{plural}' balances right now."
-        )
-        return embeds.bot_status_embed(guild, description)
+        return embeds.bot_status_embed(guild, random.choice(OPENERS), ping_ms, ping_note, version.VERSION)
 
     async def _sync_guild(self, guild):
         all_cfg = cfgschema.load_cfg()
