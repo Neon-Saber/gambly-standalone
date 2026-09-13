@@ -2599,13 +2599,12 @@ async def roulette_cmd(ctx, amount: Amount, choice: str):
 # hit and would just be a rage-quit generator. confirm button so a misclick
 # doesn't nuke someone's whole stack
 class AllInConfirm(discord.ui.View):
-    def __init__(self, author, guild, choice, bet, econ):
+    def __init__(self, author, guild, choice, bet):
         super().__init__(timeout=30)
         self.author = author
         self.guild = guild
         self.choice = choice
         self.bet = bet
-        self.econ = econ
 
     async def interaction_check(self, i):
         if i.user.id != self.author.id:
@@ -2623,16 +2622,18 @@ class AllInConfirm(discord.ui.View):
         color = roulette_color(spin)
         won = self.bet * 2 if self.choice == color else 0
 
-        econ = loadEcon(econ_file_for(self.guild))  # reload, balance mighta changed since the confirm popped up
-        a = acct(econ, self.guild, self.author)
-        a["bal"] = max(0, a["bal"] - self.bet) + won
-        save(econ, econ_file_for(self.guild))
+        with store.locked(econ_file_for(self.guild)):
+            econ = loadEcon(econ_file_for(self.guild))  # reload, balance mighta changed since the confirm popped up
+            a = acct(econ, self.guild, self.author)
+            a["bal"] = max(0, a["bal"] - self.bet) + won
+            save(econ, econ_file_for(self.guild))
+            bal_after = a["bal"]
 
         for c in self.children:
             c.disabled = True
         net = won - self.bet
         result = f"ball landed on {spin} ({color}) - " + (f"YOU WON {chips(won)}" if net >= 0 else f"lost it all, -{chips(self.bet)}")
-        await i.response.edit_message(content=f"{result}\nbal: {chips(a['bal'])}", view=self)
+        await i.response.edit_message(content=f"{result}\nbal: {chips(bal_after)}", view=self)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, b, i):
@@ -2655,7 +2656,7 @@ async def do_allin(ctx, choice):
     if a["bal"] <= 0:
         await reply(ctx, content="you're broke, nothing to bet", ephemeral=True)
         return
-    view = AllInConfirm(ctx.author, space, choice, a["bal"], econ)
+    view = AllInConfirm(ctx.author, space, choice, a["bal"])
     await reply(ctx, content=f"betting your entire stack ({chips(a['bal'])}) on **{choice}**. you sure?", view=view)
 
 
@@ -2726,11 +2727,10 @@ class HiLo(discord.ui.View):
     guess, cash out whenever or bust and lose the original bet (not the pot -
     you never actually banked the pot's growth til you hit cash out)"""
 
-    def __init__(self, author, guild, econ, amount, current):
+    def __init__(self, author, guild, amount, current):
         super().__init__(timeout=45)
         self.author = author
         self.guild = guild
-        self.econ = econ
         self.amount = amount
         self.pot = amount
         self.current = current
@@ -2755,12 +2755,20 @@ class HiLo(discord.ui.View):
             self.pot = int(self.pot * 1.8)
             await i.response.edit_message(content=self.show(), view=self)
         else:
-            a = acct(self.econ, self.guild, self.author)
-            a["bal"] -= self.amount
-            save(self.econ, econ_file_for(self.guild))
+            # reload fresh right here instead of reusing the econ snapshot
+            # from whenever this game started (could be up to 45s stale) -
+            # otherwise this save would silently undo any other economy
+            # activity (this player's or anyone else's) that happened while
+            # the game was sitting open waiting for a click
+            with store.locked(econ_file_for(self.guild)):
+                econ = loadEcon(econ_file_for(self.guild))
+                a = acct(econ, self.guild, self.author)
+                a["bal"] -= self.amount
+                save(econ, econ_file_for(self.guild))
+                bal_after = a["bal"]
             for c in self.children:
                 c.disabled = True
-            await i.response.edit_message(content=self.show() + f"\n\nwrong, lost {chips(self.amount)}. bal {chips(a['bal'])}", view=self)
+            await i.response.edit_message(content=self.show() + f"\n\nwrong, lost {chips(self.amount)}. bal {chips(bal_after)}", view=self)
 
     @discord.ui.button(label="Higher", style=discord.ButtonStyle.success)
     async def higher(self, b, i):
@@ -2773,13 +2781,16 @@ class HiLo(discord.ui.View):
     @discord.ui.button(label="Cash Out", style=discord.ButtonStyle.secondary)
     async def cashout(self, b, i):
         net = self.pot - self.amount
-        a = acct(self.econ, self.guild, self.author)
-        a["bal"] += net
-        save(self.econ, econ_file_for(self.guild))
+        with store.locked(econ_file_for(self.guild)):
+            econ = loadEcon(econ_file_for(self.guild))
+            a = acct(econ, self.guild, self.author)
+            a["bal"] += net
+            save(econ, econ_file_for(self.guild))
+            bal_after = a["bal"]
         for c in self.children:
             c.disabled = True
         sign = "+" if net >= 0 else ""
-        await i.response.edit_message(content=f"cashed out {chips(self.pot)} ({sign}{net} net). bal {chips(a['bal'])}", view=self)
+        await i.response.edit_message(content=f"cashed out {chips(self.pot)} ({sign}{net} net). bal {chips(bal_after)}", view=self)
 
 
 async def do_hilo(ctx, amount):
@@ -2793,7 +2804,7 @@ async def do_hilo(ctx, amount):
         await reply(ctx, content="bad bet amount", ephemeral=True)
         return
     first = random.randint(2, 14)
-    view = HiLo(ctx.author, space, econ, amount, first)
+    view = HiLo(ctx.author, space, amount, first)
     await reply(ctx, content=view.show(), view=view)
 
 
@@ -2870,14 +2881,13 @@ def handtotal(h):
 
 
 class BJ(discord.ui.View):
-    def __init__(self, author, guild, bet, me, dealer, econ):
+    def __init__(self, author, guild, bet, me, dealer):
         super().__init__(timeout=60)
         self.author = author
         self.guild = guild
         self.bet = bet
         self.me = me
         self.dealer = dealer
-        self.econ = econ
         self.can_double = True  # only allowed as your very first move
 
     async def interaction_check(self, i):
@@ -2894,12 +2904,19 @@ class BJ(discord.ui.View):
         return f"you: {' '.join(str(c) for c in self.me)} ({handtotal(self.me)})\ndealer: {dside}\nbet: {chips(self.bet)}"
 
     async def payout(self, i, msg, delta):
-        a = acct(self.econ, self.guild, self.author)
-        a["bal"] += delta
-        save(self.econ, econ_file_for(self.guild))
+        # reload fresh instead of the econ snapshot from whenever this hand
+        # started - a blackjack hand can sit open a while waiting on
+        # hit/stand, and saving a stale copy would silently undo any other
+        # economy activity that happened in the meantime
+        with store.locked(econ_file_for(self.guild)):
+            econ = loadEcon(econ_file_for(self.guild))
+            a = acct(econ, self.guild, self.author)
+            a["bal"] += delta
+            save(econ, econ_file_for(self.guild))
+            bal_after = a["bal"]
         for c in self.children:
             c.disabled = True
-        await i.response.edit_message(content=self.show(True) + f"\n\n{msg}, bal {chips(a['bal'])}", view=self)
+        await i.response.edit_message(content=self.show(True) + f"\n\n{msg}, bal {chips(bal_after)}", view=self)
 
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary)
     async def hit(self, b, i):
@@ -2927,7 +2944,8 @@ class BJ(discord.ui.View):
         if not self.can_double:
             await i.response.send_message("only good as your first move, before you've hit", ephemeral=True)
             return
-        a = acct(self.econ, self.guild, self.author)
+        econ = loadEcon(econ_file_for(self.guild))
+        a = acct(econ, self.guild, self.author)
         if a["bal"] < self.bet:
             await i.response.send_message("not enough chips to double this bet", ephemeral=True)
             return
@@ -2953,24 +2971,26 @@ async def do_blackjack(ctx, amount):
     if is_banned(ctx.author, space):
         await reply(ctx, content="you're banned from gambling here", ephemeral=True)
         return
-    econ = loadEcon(econ_file_for(space))
-    a = acct(econ, space, ctx.author)
-    if amount <= 0 or amount > a["bal"]:
-        await reply(ctx, content="bad bet amount", ephemeral=True)
-        return
+    with store.locked(econ_file_for(space)):
+        econ = loadEcon(econ_file_for(space))
+        a = acct(econ, space, ctx.author)
+        if amount <= 0 or amount > a["bal"]:
+            await reply(ctx, content="bad bet amount", ephemeral=True)
+            return
 
-    me = [cardval(), cardval()]
-    dealer = [cardval(), cardval()]
-    v = BJ(ctx.author, space, amount, me, dealer, econ)
+        me = [cardval(), cardval()]
+        dealer = [cardval(), cardval()]
+        v = BJ(ctx.author, space, amount, me, dealer)
 
-    if handtotal(me) == 21:
-        payout = int(amount * 1.5)
-        a["bal"] += payout
-        save(econ, econ_file_for(space))
-        for c in v.children:
-            c.disabled = True
-        await reply(ctx, content=f"blackjack!\n{v.show(True)}\n\nwon {chips(payout)}, bal {chips(a['bal'])}", view=v)
-        return
+        if handtotal(me) == 21:
+            payout = int(amount * 1.5)
+            a["bal"] += payout
+            save(econ, econ_file_for(space))
+            for c in v.children:
+                c.disabled = True
+            bal_after = a["bal"]
+            await reply(ctx, content=f"blackjack!\n{v.show(True)}\n\nwon {chips(payout)}, bal {chips(bal_after)}", view=v)
+            return
 
     await reply(ctx, content=v.show(), view=v)
 
@@ -3005,21 +3025,22 @@ class DuelConfirm(discord.ui.View):
 
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success)
     async def accept(self, b, i):
-        econ = loadEcon(econ_file_for(self.guild))
-        chal = acct(econ, self.guild, self.challenger)
-        opp = acct(econ, self.guild, self.opponent)
-        if chal["bal"] < self.amount or opp["bal"] < self.amount:
-            for c in self.children:
-                c.disabled = True
-            await i.response.edit_message(content="one of you doesn't have enough chips anymore, duel cancelled", view=self)
-            return
-        winner = random.choice([self.challenger, self.opponent])
-        loser = self.opponent if winner.id == self.challenger.id else self.challenger
-        wa = acct(econ, self.guild, winner)
-        la = acct(econ, self.guild, loser)
-        wa["bal"] += self.amount
-        la["bal"] -= self.amount
-        save(econ, econ_file_for(self.guild))
+        with store.locked(econ_file_for(self.guild)):
+            econ = loadEcon(econ_file_for(self.guild))
+            chal = acct(econ, self.guild, self.challenger)
+            opp = acct(econ, self.guild, self.opponent)
+            if chal["bal"] < self.amount or opp["bal"] < self.amount:
+                for c in self.children:
+                    c.disabled = True
+                await i.response.edit_message(content="one of you doesn't have enough chips anymore, duel cancelled", view=self)
+                return
+            winner = random.choice([self.challenger, self.opponent])
+            loser = self.opponent if winner.id == self.challenger.id else self.challenger
+            wa = acct(econ, self.guild, winner)
+            la = acct(econ, self.guild, loser)
+            wa["bal"] += self.amount
+            la["bal"] -= self.amount
+            save(econ, econ_file_for(self.guild))
         for c in self.children:
             c.disabled = True
         await i.response.edit_message(content=f"⚔️ {winner.mention} wins the duel and takes {chips(self.amount)} from {loser.mention}", view=self)
@@ -3219,10 +3240,17 @@ class MinesTile(discord.ui.Button):
                     child.label = "💣"
                     child.style = discord.ButtonStyle.danger
                 child.disabled = True
-            a = acct(view.econ, view.guild, view.author)
-            a["bal"] -= view.amount
-            save(view.econ, econ_file_for(view.guild))
-            await interaction.response.edit_message(content=f"💥 hit a mine! lost {chips(view.amount)}. bal {chips(a['bal'])}", view=view)
+            # reload fresh instead of the econ snapshot from whenever this
+            # board started (up to 120s stale) - a mines board can sit open
+            # a long time between clicks, and saving a stale copy would
+            # silently undo any other economy activity from that whole window
+            with store.locked(econ_file_for(view.guild)):
+                econ = loadEcon(econ_file_for(view.guild))
+                a = acct(econ, view.guild, view.author)
+                a["bal"] -= view.amount
+                save(econ, econ_file_for(view.guild))
+                bal_after = a["bal"]
+            await interaction.response.edit_message(content=f"💥 hit a mine! lost {chips(view.amount)}. bal {chips(bal_after)}", view=view)
             return
         view.revealed.add(self.idx)
         self.label = "💎"
@@ -3234,12 +3262,15 @@ class MinesTile(discord.ui.Button):
             view.over = True
             for child in view.children:
                 child.disabled = True
-            a = acct(view.econ, view.guild, view.author)
-            payout = int(view.amount * view.multiplier)
-            a["bal"] += payout - view.amount
-            save(view.econ, econ_file_for(view.guild))
+            with store.locked(econ_file_for(view.guild)):
+                econ = loadEcon(econ_file_for(view.guild))
+                a = acct(econ, view.guild, view.author)
+                payout = int(view.amount * view.multiplier)
+                a["bal"] += payout - view.amount
+                save(econ, econ_file_for(view.guild))
+                bal_after = a["bal"]
             await interaction.response.edit_message(
-                content=f"cleared the whole board! {view.multiplier:.2f}x - won {chips(payout - view.amount)}. bal {chips(a['bal'])}",
+                content=f"cleared the whole board! {view.multiplier:.2f}x - won {chips(payout - view.amount)}. bal {chips(bal_after)}",
                 view=view,
             )
             return
@@ -3261,22 +3292,24 @@ class MinesCashout(discord.ui.Button):
         view.over = True
         for child in view.children:
             child.disabled = True
-        a = acct(view.econ, view.guild, view.author)
-        payout = int(view.amount * view.multiplier)
-        a["bal"] += payout - view.amount
-        save(view.econ, econ_file_for(view.guild))
+        with store.locked(econ_file_for(view.guild)):
+            econ = loadEcon(econ_file_for(view.guild))
+            a = acct(econ, view.guild, view.author)
+            payout = int(view.amount * view.multiplier)
+            a["bal"] += payout - view.amount
+            save(econ, econ_file_for(view.guild))
+            bal_after = a["bal"]
         await interaction.response.edit_message(
-            content=f"cashed out at {view.multiplier:.2f}x - won {chips(payout - view.amount)}. bal {chips(a['bal'])}",
+            content=f"cashed out at {view.multiplier:.2f}x - won {chips(payout - view.amount)}. bal {chips(bal_after)}",
             view=view,
         )
 
 
 class MinesGame(discord.ui.View):
-    def __init__(self, author, guild, econ, amount, mine_count):
+    def __init__(self, author, guild, amount, mine_count):
         super().__init__(timeout=120)
         self.author = author
         self.guild = guild
-        self.econ = econ
         self.amount = amount
         self.mine_count = mine_count
         self.mine_positions = set(random.sample(range(MINES_TOTAL), mine_count))
@@ -3308,7 +3341,7 @@ async def do_mines(ctx, amount, mine_count):
     if amount <= 0 or amount > a["bal"]:
         await reply(ctx, content="bad bet amount", ephemeral=True)
         return
-    view = MinesGame(ctx.author, space, econ, amount, mine_count)
+    view = MinesGame(ctx.author, space, amount, mine_count)
     await reply(ctx, content=view.show(), view=view)
 
 
