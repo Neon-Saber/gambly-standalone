@@ -62,6 +62,17 @@ LOAN_INTEREST = 0.20
 LOAN_TERM = 86400  # 24h to pay it back before the house comes collecting
 BANK_INTEREST = 0.02  # small daily interest on whatever's sitting in the bank
 
+# hilo: payout per correct guess is odds-based (see HiLo.guess), not flat -
+# HILO_HOUSE_EDGE is the edge taken off the mathematically fair payout for
+# whatever the actual odds were on that specific guess (~8%, similar to the
+# other games here). HILO_MAX_ROUNDS/MAX_POT_MULTIPLE are a hard backstop
+# on top of that - even with fair odds a long streak is still *possible*,
+# just increasingly rare, so these exist purely so a math mistake here or
+# in some future change can't reproduce the runaway-pot exploit again.
+HILO_HOUSE_EDGE = 0.08
+HILO_MAX_ROUNDS = 25
+HILO_MAX_POT_MULTIPLE = 500  # pot can never exceed 500x the original bet
+
 # rebirth - a prestige reset. once your bal+bank clears the requirement you
 # can cash it all in to permanently boost your earnings AND your luck (both
 # grow with every rebirth, no cap), unlock higher business tiers and rarer
@@ -2797,6 +2808,7 @@ class HiLo(discord.ui.View):
         self.amount = amount
         self.pot = amount
         self.current = current
+        self.rounds = 0
 
     async def interaction_check(self, i):
         if i.user.id != self.author.id:
@@ -2821,17 +2833,47 @@ class HiLo(discord.ui.View):
             with contextlib.suppress(discord.HTTPException):
                 await self.message.edit(content=self.show() + "\n\n⏱️ timed out, game closed - nothing was wagered.", view=self)
 
+    async def _cash_out(self, i, note=""):
+        net = self.pot - self.amount
+        async with store.locked(econ_file_for(self.guild)):
+            econ = loadEcon(econ_file_for(self.guild))
+            a = acct(econ, self.guild, self.author)
+            a["bal"] += net
+            save(econ, econ_file_for(self.guild))
+            bal_after = a["bal"]
+        for c in self.children:
+            c.disabled = True
+        sign = "+" if net >= 0 else ""
+        await i.response.edit_message(content=f"cashed out {chips(self.pot)} ({sign}{net} net){note}. bal {chips(bal_after)}", view=self)
+
     async def guess(self, i, direction):
         new = random.randint(2, 14)
         if new == self.current:
             await i.response.edit_message(content=self.show() + f"\n\ntied on {card_disp(new)} - push, guess again", view=self)
             return
         correct = (direction == "higher") == (new > self.current)
-        self.current = new
         if correct:
-            self.pot = int(self.pot * 1.8)
+            # payout is proportional to how UNLIKELY this specific guess
+            # actually was, not a flat multiplier - "higher" off a low
+            # card (near-guaranteed win) barely grows the pot, while a
+            # genuinely risky call near the middle grows it close to 2x.
+            # A flat multiplier here used to mean a card-counting player
+            # could pick whichever direction had the better odds every
+            # single round and compound a real mathematical edge forever;
+            # a fixed round cap alone wouldn't have fixed that, only
+            # capped how far the same exploit could run.
+            win_count = (14 - self.current) if direction == "higher" else (self.current - 2)
+            fair_multiplier = 12 / win_count  # 12 = non-push outcomes out of 13 possible cards
+            round_multiplier = round(fair_multiplier * (1 - HILO_HOUSE_EDGE), 3)
+            self.current = new
+            self.rounds += 1
+            self.pot = min(int(self.pot * round_multiplier), self.amount * HILO_MAX_POT_MULTIPLE)
+            if self.rounds >= HILO_MAX_ROUNDS:
+                await self._cash_out(i, note=f" - hit the {HILO_MAX_ROUNDS}-round cap, auto cashed out")
+                return
             await i.response.edit_message(content=self.show(), view=self)
         else:
+            self.current = new
             # reload fresh right here instead of reusing the econ snapshot
             # from whenever this game started (could be up to 45s stale) -
             # otherwise this save would silently undo any other economy
@@ -2857,17 +2899,7 @@ class HiLo(discord.ui.View):
 
     @discord.ui.button(label="Cash Out", style=discord.ButtonStyle.secondary)
     async def cashout(self, b, i):
-        net = self.pot - self.amount
-        async with store.locked(econ_file_for(self.guild)):
-            econ = loadEcon(econ_file_for(self.guild))
-            a = acct(econ, self.guild, self.author)
-            a["bal"] += net
-            save(econ, econ_file_for(self.guild))
-            bal_after = a["bal"]
-        for c in self.children:
-            c.disabled = True
-        sign = "+" if net >= 0 else ""
-        await i.response.edit_message(content=f"cashed out {chips(self.pot)} ({sign}{net} net). bal {chips(bal_after)}", view=self)
+        await self._cash_out(i)
 
 
 async def do_hilo(ctx, amount):
@@ -4098,6 +4130,53 @@ async def reset(ctx, user: Option(discord.Member, "who", required=False) = None)
 @bot.command(name="reset")
 async def reset_cmd(ctx, user: discord.Member = None):
     await do_reset(ctx, user or ctx.author)
+
+
+async def do_setbalance(ctx, target, wallet, bank):
+    """Manager tool for correcting a specific number without touching the
+    rest of the account (inventory, streaks, rebirth, etc) - unlike !reset,
+    which wipes the whole profile back to a fresh account. Built for fixing
+    balances after an exploit/bug rather than for routine moderation."""
+    if not need_guild(ctx):
+        await reply(ctx, content="this is a server-only feature", ephemeral=True)
+        return
+    if not is_manager(ctx.author, ctx.guild):
+        await reply(ctx, content="managers only", ephemeral=True)
+        return
+    async with store.locked(econ_file_for(ctx.guild)):
+        econ = loadEcon(econ_file_for(ctx.guild))
+        a = acct(econ, ctx.guild, target)
+        before_bal, before_bank = a["bal"], a.get("bank", 0)
+        if wallet is not None:
+            a["bal"] = wallet
+        if bank is not None:
+            a["bank"] = bank
+        save(econ, econ_file_for(ctx.guild))
+    log_event(ctx.guild.name,
+              f"{ctx.author.display_name} set {target.display_name}'s balance: "
+              f"wallet {before_bal}->{a['bal']}, bank {before_bank}->{a['bank']}")
+    await reply(ctx, content=f"{target.mention} is now at {chips(a['bal'])} wallet / {chips(a['bank'])} bank")
+
+
+@bot.slash_command(name="setbalance", description="manager - directly set someone's wallet/bank amount")
+async def setbalance(ctx, user: Option(discord.Member, "who"),
+                      wallet: Option(int, "new wallet amount", required=False, min_value=0) = None,
+                      bank: Option(int, "new bank amount", required=False, min_value=0) = None):
+    if wallet is None and bank is None:
+        await reply(ctx, content="give me at least a wallet or bank amount to set", ephemeral=True)
+        return
+    await do_setbalance(ctx, user, wallet, bank)
+
+
+@bot.command(name="setbalance", aliases=["setbal"])
+async def setbalance_cmd(ctx, user: discord.Member, field: str, amount: Amount):
+    field = field.lower()
+    if field in ("wallet", "bal", "balance"):
+        await do_setbalance(ctx, user, amount, None)
+    elif field == "bank":
+        await do_setbalance(ctx, user, None, amount)
+    else:
+        await reply(ctx, content="say `wallet` or `bank` - e.g. `!setbalance @user wallet 1000`", ephemeral=True)
 
 
 async def do_setannounce(ctx, channel):
