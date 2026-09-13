@@ -23,17 +23,34 @@ def user_field(embed, label, user):
 def bot_status_embed(guild, opener, ping_ms, ping_note, uptime_str, version_str):
     """Friendly "how's it going" status embed - see cogs/bot_status.py for
     the human-toned copy this wraps. One spoken-style opener line plus an
-    online indicator, then a compact three-field grid (latency, uptime,
-    version) - no servers/members/bot-tag, so it stays a quick glance
-    instead of a stats dump."""
+    online indicator, then latency/uptime/version stacked as their own
+    rows (not side-by-side) so the card has some vertical presence instead
+    of reading like a single cramped line - no servers/members/bot-tag,
+    still just a quick glance rather than a stats dump."""
     embed = _base_embed(f"{guild.name} status", COLOR_INFO)
     embed.description = f"{opener}\n\n✅ **Online**"
-    embed.add_field(name="🏓 latency", value=f"{ping_ms}ms - {ping_note}", inline=True)
-    embed.add_field(name="⏱️ uptime", value=uptime_str, inline=True)
-    embed.add_field(name="🏷️ version", value=version_str, inline=True)
+    embed.add_field(name="🏓 latency", value=f"{ping_ms}ms - {ping_note}", inline=False)
+    embed.add_field(name="⏱️ uptime", value=uptime_str, inline=False)
+    embed.add_field(name="🏷️ version", value=version_str, inline=False)
     if guild.icon:
         embed.set_thumbnail(url=guild.icon.url)
     embed.set_footer(text="checks in periodically - run /status anytime for a fresh read")
+    return embed
+
+
+def bot_status_stopped_embed(guild, reason):
+    """Posted in place of the usual status embed right as the bot shuts
+    down (see bot.py's shutdown handler + BotStatus.mark_stopped) so the
+    channel shows an accurate "stopped, here's why" instead of leaving the
+    last "Online" post up looking fine when the bot is actually down.
+    Same tall single-column shape as bot_status_embed for a consistent
+    look between the two states."""
+    embed = _base_embed(f"{guild.name} status", COLOR_SEVERE)
+    embed.description = "🔴 **Stopped**"
+    embed.add_field(name="reason", value=reason or "no reason given", inline=False)
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+    embed.set_footer(text="will post a fresh status once it's back up")
     return embed
 
 

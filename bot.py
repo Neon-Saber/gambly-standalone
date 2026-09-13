@@ -1,4 +1,4 @@
-import json, os, random, time, asyncio, traceback, re, contextlib
+import json, os, random, time, asyncio, traceback, re, contextlib, signal, sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -4155,4 +4155,70 @@ async def on_command_error(ctx, error):
 
 
 if __name__ == "__main__":
-    bot.run(TOKEN)
+    # ---- graceful shutdown: update the status embed(s) before disconnecting ----
+    # bot.run() (what used to be here) handles SIGINT/SIGTERM internally but
+    # gives us no hook to run anything before it tears the connection down -
+    # so we run our own asyncio loop and register the signal handlers
+    # ourselves, which lets us call BotStatus.mark_stopped() (edits every
+    # enabled guild's status message to a red "Stopped" state) right before
+    # bot.close(). Otherwise the last "Online" post just sits there looking
+    # fine while the bot is actually down.
+    _STOP_REASON_FILE = Path(__file__).parent / "stop_reason.txt"
+
+    def _resolve_stop_reason():
+        """Two ways to supply a reason, since a systemd stop has no console
+        to prompt on:
+          1. drop one in stop_reason.txt right before stopping, e.g.
+             echo "deploying update" > stop_reason.txt && sudo systemctl stop gambly-bot
+             (deleted after being read so it can't go stale and get reused
+             by a later, unrelated stop)
+          2. if this actually IS an interactive terminal (running
+             `python bot.py` directly rather than as a service), just type
+             one at the prompt when asked
+        Falls back to a generic reason if neither is available.
+        """
+        if _STOP_REASON_FILE.exists():
+            reason = _STOP_REASON_FILE.read_text().strip()
+            try:
+                _STOP_REASON_FILE.unlink()
+            except OSError:
+                pass
+            if reason:
+                return reason
+        if sys.stdin.isatty():
+            try:
+                typed = input("reason for stopping (blank for none): ").strip()
+                if typed:
+                    return typed
+            except (EOFError, KeyboardInterrupt):
+                pass
+        return "no reason given"
+
+    async def _graceful_shutdown():
+        # the reason-resolving I/O (reading a file, or blocking on input())
+        # runs on a worker thread so it never freezes the event loop while
+        # the bot's still otherwise connected and waiting to hear back.
+        reason = await asyncio.to_thread(_resolve_stop_reason)
+        print(f"[shutdown] stopping - {reason}")
+        status_cog = bot.get_cog("BotStatus")
+        if status_cog:
+            try:
+                await status_cog.mark_stopped(reason)
+            except Exception as e:
+                print(f"[shutdown] couldn't update the status embed(s): {e}")
+        await bot.close()
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, lambda: loop.create_task(_graceful_shutdown()))
+            except NotImplementedError:
+                pass  # e.g. Windows - add_signal_handler isn't supported there; SIGINT still raises KeyboardInterrupt below
+        async with bot:
+            await bot.start(TOKEN)
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

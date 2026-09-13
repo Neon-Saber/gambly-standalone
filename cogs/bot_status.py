@@ -27,6 +27,24 @@ count channel) rather than sending a new one every cycle, so a channel with
 this enabled doesn't slowly fill up with old status posts. If that message
 ever gets deleted or the channel gets swapped, this just posts a fresh one
 and starts tracking that instead - see status_message_id in config_schema.py.
+
+WHY _sync_guild IS WRAPPED IN store.locked(): on_ready fires for every
+guild AND status_loop runs its first pass the moment the bot's ready
+(tasks.loop starts immediately once before_loop's wait_until_ready()
+returns) - so both can call _sync_guild for the same guild back to back.
+Without a lock, both read config.json before either has saved, both see
+no status_message_id yet, and both send a brand new message - the classic
+double-post. The lock forces the second call to wait for the first's
+save to land, then it re-reads config (now has the message id) and edits
+instead. Same load-mutate-save race store.py's docstring already covers
+for the dashboard-vs-bot case; this is bot-vs-bot on top of that.
+
+SHUTDOWN: bot.py's signal handler calls mark_stopped(reason) right before
+closing the connection, which edits every enabled guild's status message
+to a red "Stopped" state with that reason instead of leaving the last
+"Online" post looking fine while the bot is actually down. See bot.py for
+how the reason itself gets supplied (a stop_reason.txt file, or typed at
+the console if it's an interactive session).
 """
 import random
 
@@ -36,6 +54,7 @@ from discord.ext import commands, tasks
 import config_schema as cfgschema
 import cog_utils as cu
 import embeds
+import store
 import version
 
 UPDATE_INTERVAL_MINUTES = 15
@@ -89,42 +108,43 @@ class BotStatus(commands.Cog):
         )
 
     async def _sync_guild(self, guild):
-        all_cfg = cfgschema.load_cfg()
-        g_cfg = cfgschema.ensure_guild(all_cfg, guild.id, guild.name)
-        if not g_cfg.get("status_enabled"):
-            return
-        channel_id = g_cfg.get("status_channel_id")
-        if not channel_id:
-            print(f"[bot_status] enabled in '{guild.name}' but no channel is set - "
-                  f"pick one in the dashboard's Moderation & Logging tab")
-            return
-        channel, err = await cu.resolve_channel(guild, channel_id)
-        if err:
-            print(f"[bot_status] '{guild.name}': {err}")
-            return
+        async with store.locked(cfgschema.CFG_FILE):
+            all_cfg = cfgschema.load_cfg()
+            g_cfg = cfgschema.ensure_guild(all_cfg, guild.id, guild.name)
+            if not g_cfg.get("status_enabled"):
+                return
+            channel_id = g_cfg.get("status_channel_id")
+            if not channel_id:
+                print(f"[bot_status] enabled in '{guild.name}' but no channel is set - "
+                      f"pick one in the dashboard's Moderation & Logging tab")
+                return
+            channel, err = await cu.resolve_channel(guild, channel_id)
+            if err:
+                print(f"[bot_status] '{guild.name}': {err}")
+                return
 
-        embed = await self._build_embed(guild)
+            embed = await self._build_embed(guild)
 
-        msg = None
-        msg_id = g_cfg.get("status_message_id")
-        if msg_id:
+            msg = None
+            msg_id = g_cfg.get("status_message_id")
+            if msg_id:
+                try:
+                    msg = await channel.fetch_message(int(msg_id))
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+                    msg = None  # deleted, or we can't see it anymore - fall through and post fresh
+
             try:
-                msg = await channel.fetch_message(int(msg_id))
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
-                msg = None  # deleted, or we can't see it anymore - fall through and post fresh
-
-        try:
-            if msg:
-                await msg.edit(embed=embed)
-            else:
-                new_msg = await channel.send(embed=embed)
-                g_cfg["status_message_id"] = str(new_msg.id)
-                cfgschema.save_cfg(all_cfg)
-        except discord.Forbidden:
-            print(f"[bot_status] no permission to post/edit in the status channel in '{guild.name}' - "
-                  f"check the bot has Send Messages/Embed Links there")
-        except discord.HTTPException as e:
-            print(f"[bot_status] failed to update the status embed in '{guild.name}': {e}")
+                if msg:
+                    await msg.edit(embed=embed)
+                else:
+                    new_msg = await channel.send(embed=embed)
+                    g_cfg["status_message_id"] = str(new_msg.id)
+                    cfgschema.save_cfg(all_cfg)
+            except discord.Forbidden:
+                print(f"[bot_status] no permission to post/edit in the status channel in '{guild.name}' - "
+                      f"check the bot has Send Messages/Embed Links there")
+            except discord.HTTPException as e:
+                print(f"[bot_status] failed to update the status embed in '{guild.name}': {e}")
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -139,6 +159,30 @@ class BotStatus(commands.Cog):
     @status_loop.before_loop
     async def before_status_loop(self):
         await self.bot.wait_until_ready()
+
+    async def mark_stopped(self, reason):
+        """Called once from bot.py's shutdown handler, right before the
+        connection closes. Best-effort: if a guild has no status message
+        yet, or the edit fails for any reason, we're shutting down anyway
+        so there's nothing useful to do but move on to the next guild."""
+        self.status_loop.cancel()
+        all_cfg = cfgschema.load_cfg()
+        for guild in self.bot.guilds:
+            g_cfg = cfgschema.ensure_guild(all_cfg, guild.id, guild.name)
+            if not g_cfg.get("status_enabled"):
+                continue
+            channel_id = g_cfg.get("status_channel_id")
+            msg_id = g_cfg.get("status_message_id")
+            if not channel_id or not msg_id:
+                continue
+            channel, err = await cu.resolve_channel(guild, channel_id)
+            if err:
+                continue
+            try:
+                msg = await channel.fetch_message(int(msg_id))
+                await msg.edit(embed=embeds.bot_status_stopped_embed(guild, reason))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, ValueError):
+                pass
 
     async def _do_status(self, ctx):
         if not ctx.guild:
