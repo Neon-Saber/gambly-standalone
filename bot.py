@@ -243,18 +243,22 @@ def pop_rig(guild, user):
 
 # ---------------- server tax + weekly tournament stat tracking ----------------
 def take_tax(guild, delta):
-    """positive delta only - skims tax_pct into the server pot, returns what's left"""
+    """positive delta only - skims tax_pct into the server pot, returns what's
+    left. (this used to be defined but never actually called anywhere, so the
+    tax_pct dashboard setting silently did nothing - it's wired into the
+    games' win paths now.)"""
     if delta <= 0:
         return delta
-    all_cfg = loadCfg()
-    g = get_guild_cfg(all_cfg, guild)
-    pct = g.get("tax_pct", 0)
-    if pct <= 0:
-        return delta
-    tax = int(delta * pct / 100)
-    if tax > 0:
-        g["server_pot"] = g.get("server_pot", 0) + tax
-        saveCfg(all_cfg)
+    with store.locked(cfgschema.CFG_FILE):
+        all_cfg = loadCfg()
+        g = get_guild_cfg(all_cfg, guild)
+        pct = g.get("tax_pct", 0)
+        if pct <= 0:
+            return delta
+        tax = int(delta * pct / 100)
+        if tax > 0:
+            g["server_pot"] = g.get("server_pot", 0) + tax
+            saveCfg(all_cfg)
     return delta - tax
 
 
@@ -1249,14 +1253,24 @@ async def do_give(ctx, user, amount):
     if user.bot:
         await reply(ctx, content="bots dont need chips", ephemeral=True)
         return
-    econ = loadEcon()
-    a, b = acct(econ, ctx.guild, ctx.author), acct(econ, ctx.guild, user)
-    if a["bal"] < amount:
-        await reply(ctx, content=f"you only have {chips(a['bal'])}", ephemeral=True)
+    # the whole read-modify-write has to happen under one lock, or a give
+    # that races with literally any other economy command on either party
+    # can get its balance change silently overwritten (see store.locked)
+    insufficient = False
+    with store.locked(econ_file):
+        econ = loadEcon()
+        a, b = acct(econ, ctx.guild, ctx.author), acct(econ, ctx.guild, user)
+        if a["bal"] < amount:
+            insufficient = True
+            bal_snapshot = a["bal"]
+        else:
+            a["bal"] -= amount
+            b["bal"] += amount
+            save(econ)
+    if insufficient:
+        await reply(ctx, content=f"you only have {chips(bal_snapshot)}", ephemeral=True)
         return
-    a["bal"] -= amount
-    b["bal"] += amount
-    save(econ)
+    log_event(ctx.guild.name, f"{ctx.author.display_name} sent {chips(amount)} to {user.display_name}")
     await reply(ctx, content=f"{ctx.author.mention} sent {chips(amount)} to {user.mention}")
 
 
@@ -2279,38 +2293,59 @@ async def invest_cmd(ctx, amount: Amount, days: int):
 
 
 # ================= GAMES =================
+# a handful of the simplest games here (coinflip, dice, war, rps) used to pay
+# out at PERFECTLY fair odds (0% house edge) while everything else in the
+# file (crash, roulette, slots, baccarat, ladder) was deliberately tuned to a
+# few percent in the house's favor. That wasn't a design choice, it was an
+# oversight - a 0%-edge game is fine in isolation, but across the whole
+# economy it means those specific games are a pure, lossless way to move
+# chips around forever with nothing ever draining back out. These multipliers
+# bring each one in line with the ~3% edge /crash already uses, WITHOUT
+# touching the actual odds (still a genuine 50/50 coinflip, a genuine 1-in-6
+# dice guess, etc) - just a slightly-under-even payout on the win side, same
+# as how a real sportsbook's "even money" bet actually pays out.
+COINFLIP_WIN_MULT = 0.94   # 50% chance, so EV = .5*.94 - .5*1 = -3%
+DICE_WIN_MULT = 4.8        # 1/6 chance, so EV = 4.8/6 - 5/6 = -3.3%
+WAR_WIN_MULT = 0.93        # ~46.2% chance (13/169 ties push), EV ≈ -3.2%
+RPS_WIN_MULT = 0.91        # 1/3 chance (1/3 ties push), EV = -3%
 async def do_coinflip(ctx, amount, side):
     space = get_space(ctx)
     if is_banned(ctx.author, space):
         await reply(ctx, content="you're banned from gambling here", ephemeral=True)
         return
-    econ = loadEcon(econ_file_for(space))
-    a = acct(econ, space, ctx.author)
-    if amount <= 0 or amount > a["bal"]:
-        await reply(ctx, content="bad bet amount", ephemeral=True)
-        return
-    rig = pop_rig(space, ctx.author)
-    if rig == "win":
-        result = side
-    elif rig == "lose":
-        result = "tails" if side == "heads" else "heads"
-    else:
-        result = random.choice(["heads", "tails"])
-    bal_before = a["bal"]
-    if result == side:
-        a["bal"] += amount
-        msg = f"landed {result}, you won {chips(amount)}! bal: {chips(a['bal'])}"
-        net = amount
-    else:
-        a["bal"] -= amount
-        msg = f"landed {result}, lost {chips(amount)}. bal: {chips(a['bal'])}"
-        net = -amount
-    check_bet_badges(a, space.name, amount, bal_before, net)
-    save(econ, econ_file_for(space))
+    with store.locked(econ_file_for(space)):
+        econ = loadEcon(econ_file_for(space))
+        a = acct(econ, space, ctx.author)
+        if amount <= 0 or amount > a["bal"]:
+            await reply(ctx, content="bad bet amount", ephemeral=True)
+            return
+        rig = pop_rig(space, ctx.author)
+        if rig == "win":
+            result = side
+        elif rig == "lose":
+            result = "tails" if side == "heads" else "heads"
+        else:
+            result = random.choice(["heads", "tails"])
+        bal_before = a["bal"]
+        if result == side:
+            # true 50/50 odds, but the payout is ~3% under full double-or-
+            # nothing (same house edge crash uses) - a coinflip with a flat
+            # 0% edge never gives the house/economy a way to actually take
+            # anything, so chips only ever pile up and never drain
+            won = take_tax(space, int(amount * COINFLIP_WIN_MULT))
+            a["bal"] += won
+            msg = f"landed {result}, you won {chips(won)}! bal: {chips(a['bal'])}"
+            net = won
+        else:
+            a["bal"] -= amount
+            msg = f"landed {result}, lost {chips(amount)}. bal: {chips(a['bal'])}"
+            net = -amount
+        check_bet_badges(a, space.name, amount, bal_before, net)
+        save(econ, econ_file_for(space))
     await reply(ctx, content=msg)
 
 
-@bot.slash_command(name="coinflip", description="flip a coin, double or nothing")
+@bot.slash_command(name="coinflip", description="flip a coin, ~3% house edge on the payout")
 async def coinflip(ctx, amount: Option(int, "bet", min_value=1), side: Option(str, "pick one", choices=["heads", "tails"])):
     await do_coinflip(ctx, amount, side)
 
@@ -2334,63 +2369,68 @@ async def do_slots(ctx, amount):
     if is_banned(ctx.author, space):
         await reply(ctx, content="you're banned from gambling here", ephemeral=True)
         return
-    econ = loadEcon(econ_file_for(space))
-    a = acct(econ, space, ctx.author)
-    if amount <= 0:
-        await reply(ctx, content="bet something real", ephemeral=True)
-        return
-    if amount > a["bal"]:
-        await reply(ctx, content="not enough chips", ephemeral=True)
-        return
+    with store.locked(econ_file_for(space)):
+        econ = loadEcon(econ_file_for(space))
+        a = acct(econ, space, ctx.author)
+        if amount <= 0:
+            await reply(ctx, content="bet something real", ephemeral=True)
+            return
+        if amount > a["bal"]:
+            await reply(ctx, content="not enough chips", ephemeral=True)
+            return
 
-    rig = pop_rig(space, ctx.author)
-    if rig == "win":
-        reels = ["🍒", "🍒", "🍒"]  # modest guaranteed win, not a jackpot
-    elif rig == "lose":
-        syms = list(SYMS.keys())
-        while True:
-            reels = random.choices(syms, weights=list(SYMS.values()), k=3)
-            if len(set(reels)) == 3:  # no pair, no jackpot
-                break
-    else:
-        reels = random.choices(list(SYMS.keys()), weights=list(SYMS.values()), k=3)
-
-    # yeah this is just a chain of ifs, i know. works fine, not touching it
-    won = 0
-    if reels[0] == reels[1] == reels[2]:
-        s = reels[0]
-        if s == "7️⃣":
-            won = amount * 20
-        elif s == "💎":
-            won = amount * 10
-        elif s == "⭐":
-            won = amount * 6
-        elif s == "🔔":
-            won = amount * 4
+        rig = pop_rig(space, ctx.author)
+        if rig == "win":
+            reels = ["🍒", "🍒", "🍒"]  # modest guaranteed win, not a jackpot
+        elif rig == "lose":
+            syms = list(SYMS.keys())
+            while True:
+                reels = random.choices(syms, weights=list(SYMS.values()), k=3)
+                if len(set(reels)) == 3:  # no pair, no jackpot
+                    break
         else:
-            won = amount * 3
-    elif reels[0] == reels[1] or reels[1] == reels[2] or reels[0] == reels[2]:
-        won = int(amount * 1.2)
+            reels = random.choices(list(SYMS.keys()), weights=list(SYMS.values()), k=3)
 
-    # every non-jackpot spin chips a little into the pool, triple 7s takes
-    # the whole thing on top of the normal payout then resets it
-    all_cfg = loadCfg()
-    gcfg = get_guild_cfg(all_cfg, space)
-    jackpot_note = ""
-    if reels[0] == reels[1] == reels[2] == "7️⃣":
-        pool = gcfg["jackpot"]
-        won += pool
-        gcfg["jackpot"] = 500
-        jackpot_note = f"\n🎉 JACKPOT on top of that: +{chips(pool)}"
-        log_event(space.name, f"{ctx.author.display_name} hit the jackpot for {chips(pool)}!")
-    else:
-        gcfg["jackpot"] += max(1, int(amount * 0.02))
-    saveCfg(all_cfg)
+        # yeah this is just a chain of ifs, i know. works fine, not touching it
+        won = 0
+        if reels[0] == reels[1] == reels[2]:
+            s = reels[0]
+            if s == "7️⃣":
+                won = amount * 20
+            elif s == "💎":
+                won = amount * 10
+            elif s == "⭐":
+                won = amount * 6
+            elif s == "🔔":
+                won = amount * 4
+            else:
+                won = amount * 3
+        elif reels[0] == reels[1] or reels[1] == reels[2] or reels[0] == reels[2]:
+            won = int(amount * 1.2)
 
-    a["bal"] = a["bal"] - amount + won
-    net = won - amount
-    check_bet_badges(a, space.name, amount, a["bal"] - net, net)
-    save(econ, econ_file_for(space))
+        # every non-jackpot spin chips a little into the pool, triple 7s takes
+        # the whole thing on top of the normal payout then resets it
+        with store.locked(cfgschema.CFG_FILE):
+            all_cfg = loadCfg()
+            gcfg = get_guild_cfg(all_cfg, space)
+            jackpot_note = ""
+            if reels[0] == reels[1] == reels[2] == "7️⃣":
+                pool = gcfg["jackpot"]
+                won += pool
+                gcfg["jackpot"] = 500
+                jackpot_note = f"\n🎉 JACKPOT on top of that: +{chips(pool)}"
+                log_event(space.name, f"{ctx.author.display_name} hit the jackpot for {chips(pool)}!")
+            else:
+                gcfg["jackpot"] += max(1, int(amount * 0.02))
+            saveCfg(all_cfg)
+
+        net = won - amount
+        if net > 0:
+            net = take_tax(space, net)
+            won = amount + net
+        a["bal"] = a["bal"] - amount + won
+        check_bet_badges(a, space.name, amount, a["bal"] - net, net)
+        save(econ, econ_file_for(space))
     await reply(ctx, content=f"[ {' '.join(reels)} ]\n{'won' if net>=0 else 'lost'} {chips(abs(net))} - bal {chips(a['bal'])}{jackpot_note}")
 
 
@@ -2428,33 +2468,35 @@ async def do_dice(ctx, amount, guess):
     if guess < 1 or guess > 6:
         await reply(ctx, content="guess has to be 1-6", ephemeral=True)
         return
-    econ = loadEcon(econ_file_for(space))
-    a = acct(econ, space, ctx.author)
-    if amount <= 0 or amount > a["bal"]:
-        await reply(ctx, content="bad bet amount", ephemeral=True)
-        return
-    rig = pop_rig(space, ctx.author)
-    if rig == "win":
-        roll = guess
-    elif rig == "lose":
-        roll = random.choice([n for n in range(1, 7) if n != guess])
-    else:
-        roll = random.randint(1, 6)
-    bal_before = a["bal"]
-    if roll == guess:
-        a["bal"] += amount * 5
-        msg = f"rolled a {roll}, nailed it! won {chips(amount * 5)}. bal: {chips(a['bal'])}"
-        net = amount * 5
-    else:
-        a["bal"] -= amount
-        msg = f"rolled a {roll}, missed your {guess}. lost {chips(amount)}. bal: {chips(a['bal'])}"
-        net = -amount
-    check_bet_badges(a, space.name, amount, bal_before, net)
-    save(econ, econ_file_for(space))
+    with store.locked(econ_file_for(space)):
+        econ = loadEcon(econ_file_for(space))
+        a = acct(econ, space, ctx.author)
+        if amount <= 0 or amount > a["bal"]:
+            await reply(ctx, content="bad bet amount", ephemeral=True)
+            return
+        rig = pop_rig(space, ctx.author)
+        if rig == "win":
+            roll = guess
+        elif rig == "lose":
+            roll = random.choice([n for n in range(1, 7) if n != guess])
+        else:
+            roll = random.randint(1, 6)
+        bal_before = a["bal"]
+        if roll == guess:
+            won = take_tax(space, int(amount * DICE_WIN_MULT))
+            a["bal"] += won
+            msg = f"rolled a {roll}, nailed it! won {chips(won)}. bal: {chips(a['bal'])}"
+            net = won
+        else:
+            a["bal"] -= amount
+            msg = f"rolled a {roll}, missed your {guess}. lost {chips(amount)}. bal: {chips(a['bal'])}"
+            net = -amount
+        check_bet_badges(a, space.name, amount, bal_before, net)
+        save(econ, econ_file_for(space))
     await reply(ctx, content=msg)
 
 
-@bot.slash_command(name="dice", description="guess the roll, 5x payout")
+@bot.slash_command(name="dice", description="guess the roll, ~4.8x payout")
 async def dice(ctx, amount: Option(int, "bet", min_value=1), guess: Option(int, "1-6", min_value=1, max_value=6)):
     await do_dice(ctx, amount, guess)
 
@@ -2478,57 +2520,67 @@ async def do_roulette(ctx, amount, choice):
     if is_banned(ctx.author, space):
         await reply(ctx, content="you're banned from gambling here", ephemeral=True)
         return
-    econ = loadEcon(econ_file_for(space))
-    a = acct(econ, space, ctx.author)
-    if amount <= 0 or amount > a["bal"]:
-        await reply(ctx, content="bad bet amount", ephemeral=True)
-        return
+    with store.locked(econ_file_for(space)):
+        econ = loadEcon(econ_file_for(space))
+        a = acct(econ, space, ctx.author)
+        if amount <= 0 or amount > a["bal"]:
+            await reply(ctx, content="bad bet amount", ephemeral=True)
+            return
 
-    choice = choice.lower().strip()
-    rig = pop_rig(space, ctx.author)
-    if rig == "win":
-        if choice.isdigit():
-            spin = int(choice)
-        elif choice in ("red", "black"):
-            spin = random.choice([n for n in range(1, 37) if roulette_color(n) == choice])
-        elif choice == "green":
-            spin = 0
-        else:
-            spin = random.randint(0, 36)
-    elif rig == "lose":
-        if choice.isdigit():
-            spin = random.choice([n for n in range(0, 37) if n != int(choice)])
-        elif choice in ("red", "black"):
-            spin = random.choice([n for n in range(1, 37) if roulette_color(n) != choice])
-        elif choice == "green":
-            spin = random.randint(1, 36)
-        else:
-            spin = random.randint(0, 36)
-    else:
-        spin = random.randint(0, 36)
-    color = roulette_color(spin)
-    won = 0
-
-    if choice.isdigit():
-        if int(choice) < 0 or int(choice) > 36:
+        choice = choice.lower().strip()
+        if choice.isdigit() and (int(choice) < 0 or int(choice) > 36):
             await reply(ctx, content="numbers are 0-36", ephemeral=True)
             return
-        if int(choice) == spin:
-            won = amount * 35
-    elif choice in ("red", "black"):
-        if choice == color:
-            won = amount * 2
-    elif choice == "green":
-        if color == "green":
-            won = amount * 14
-    else:
-        await reply(ctx, content="bet red, black, green, or a number 0-36", ephemeral=True)
-        return
+        if not (choice.isdigit() or choice in ("red", "black", "green")):
+            await reply(ctx, content="bet red, black, green, or a number 0-36", ephemeral=True)
+            return
 
-    a["bal"] = a["bal"] - amount + won
-    save(econ, econ_file_for(space))
-    net = won - amount
-    await reply(ctx, content=f"ball landed on {spin} ({color})\n{'won' if net>=0 else 'lost'} {chips(abs(net))} - bal {chips(a['bal'])}")
+        rig = pop_rig(space, ctx.author)
+        if rig == "win":
+            if choice.isdigit():
+                spin = int(choice)
+            elif choice in ("red", "black"):
+                spin = random.choice([n for n in range(1, 37) if roulette_color(n) == choice])
+            elif choice == "green":
+                spin = 0
+            else:
+                spin = random.randint(0, 36)
+        elif rig == "lose":
+            if choice.isdigit():
+                spin = random.choice([n for n in range(0, 37) if n != int(choice)])
+            elif choice in ("red", "black"):
+                spin = random.choice([n for n in range(1, 37) if roulette_color(n) != choice])
+            elif choice == "green":
+                spin = random.randint(1, 36)
+            else:
+                spin = random.randint(0, 36)
+        else:
+            spin = random.randint(0, 36)
+        color = roulette_color(spin)
+        won = 0
+
+        if choice.isdigit():
+            if int(choice) == spin:
+                won = amount * 35
+        elif choice in ("red", "black"):
+            if choice == color:
+                won = amount * 2
+        elif choice == "green":
+            # green IS a straight-up bet on 0 (also 1-in-37) - it has to pay
+            # the same 35x as any other single-number bet. it used to only
+            # pay 14x, which made it a trap: same odds as picking a number,
+            # much worse payout, no reason anyone should ever take it.
+            if color == "green":
+                won = amount * 35
+
+        net = won - amount
+        if net > 0:
+            net = take_tax(space, net)
+            won = amount + net
+        a["bal"] = a["bal"] - amount + won
+        save(econ, econ_file_for(space))
+        bal_after = a["bal"]
+    await reply(ctx, content=f"ball landed on {spin} ({color})\n{'won' if net>=0 else 'lost'} {chips(abs(net))} - bal {chips(bal_after)}")
 
 
 @bot.slash_command(name="roulette", description="bet on red/black/green or a straight number")
@@ -2630,29 +2682,32 @@ async def do_war(ctx, amount):
     if is_banned(ctx.author, space):
         await reply(ctx, content="you're banned from gambling here", ephemeral=True)
         return
-    econ = loadEcon(econ_file_for(space))
-    a = acct(econ, space, ctx.author)
-    if amount <= 0 or amount > a["bal"]:
-        await reply(ctx, content="bad bet amount", ephemeral=True)
-        return
+    with store.locked(econ_file_for(space)):
+        econ = loadEcon(econ_file_for(space))
+        a = acct(econ, space, ctx.author)
+        if amount <= 0 or amount > a["bal"]:
+            await reply(ctx, content="bad bet amount", ephemeral=True)
+            return
 
-    rig = pop_rig(space, ctx.author)
-    if rig == "win":
-        mine, dealer = 14, random.randint(2, 13)
-    elif rig == "lose":
-        mine, dealer = random.randint(2, 13), 14
-    else:
-        mine, dealer = random.randint(2, 14), random.randint(2, 14)
-    if mine == dealer:
-        msg = f"you drew {card_disp(mine)}, dealer drew {card_disp(dealer)} - tie, push, bet returned untouched"
-    elif mine > dealer:
-        a["bal"] += amount
-        msg = f"you drew {card_disp(mine)}, dealer drew {card_disp(dealer)} - you win {chips(amount)}"
-    else:
-        a["bal"] -= amount
-        msg = f"you drew {card_disp(mine)}, dealer drew {card_disp(dealer)} - dealer wins, lost {chips(amount)}"
-    save(econ, econ_file_for(space))
-    await reply(ctx, content=f"{msg}. bal {chips(a['bal'])}")
+        rig = pop_rig(space, ctx.author)
+        if rig == "win":
+            mine, dealer = 14, random.randint(2, 13)
+        elif rig == "lose":
+            mine, dealer = random.randint(2, 13), 14
+        else:
+            mine, dealer = random.randint(2, 14), random.randint(2, 14)
+        if mine == dealer:
+            msg = f"you drew {card_disp(mine)}, dealer drew {card_disp(dealer)} - tie, push, bet returned untouched"
+        elif mine > dealer:
+            won = take_tax(space, int(amount * WAR_WIN_MULT))
+            a["bal"] += won
+            msg = f"you drew {card_disp(mine)}, dealer drew {card_disp(dealer)} - you win {chips(won)}"
+        else:
+            a["bal"] -= amount
+            msg = f"you drew {card_disp(mine)}, dealer drew {card_disp(dealer)} - dealer wins, lost {chips(amount)}"
+        save(econ, econ_file_for(space))
+        bal_after = a["bal"]
+    await reply(ctx, content=f"{msg}. bal {chips(bal_after)}")
 
 
 @bot.slash_command(name="war", description="one card each, highest wins, tie is a push")
@@ -3440,31 +3495,34 @@ async def do_rps(ctx, amount, choice):
     if choice not in RPS_BEATS:
         await reply(ctx, content="pick rock, paper, or scissors", ephemeral=True)
         return
-    econ = loadEcon(econ_file_for(space))
-    a = acct(econ, space, ctx.author)
-    if amount <= 0 or amount > a["bal"]:
-        await reply(ctx, content="bad bet amount", ephemeral=True)
-        return
-    house = random.choice(list(RPS_BEATS.keys()))
-    bal_before = a["bal"]
-    if house == choice:
-        msg = f"house also threw {house} - push, bet returned"
-        net = 0
-    elif RPS_BEATS[choice] == house:
-        a["bal"] += amount
-        msg = f"you threw {choice}, house threw {house} - you win! +{chips(amount)}"
-        net = amount
-    else:
-        a["bal"] -= amount
-        msg = f"you threw {choice}, house threw {house} - you lose, -{chips(amount)}"
-        net = -amount
-    if net != 0:
-        check_bet_badges(a, space.name, amount, bal_before, net)
-    save(econ, econ_file_for(space))
-    await reply(ctx, content=f"{msg}. bal {chips(a['bal'])}")
+    with store.locked(econ_file_for(space)):
+        econ = loadEcon(econ_file_for(space))
+        a = acct(econ, space, ctx.author)
+        if amount <= 0 or amount > a["bal"]:
+            await reply(ctx, content="bad bet amount", ephemeral=True)
+            return
+        house = random.choice(list(RPS_BEATS.keys()))
+        bal_before = a["bal"]
+        if house == choice:
+            msg = f"house also threw {house} - push, bet returned"
+            net = 0
+        elif RPS_BEATS[choice] == house:
+            won = take_tax(space, int(amount * RPS_WIN_MULT))
+            a["bal"] += won
+            msg = f"you threw {choice}, house threw {house} - you win! +{chips(won)}"
+            net = won
+        else:
+            a["bal"] -= amount
+            msg = f"you threw {choice}, house threw {house} - you lose, -{chips(amount)}"
+            net = -amount
+        if net != 0:
+            check_bet_badges(a, space.name, amount, bal_before, net)
+        save(econ, econ_file_for(space))
+        bal_after = a["bal"]
+    await reply(ctx, content=f"{msg}. bal {chips(bal_after)}")
 
 
-@bot.slash_command(name="rps", description="rock paper scissors vs the house, win doubles your bet")
+@bot.slash_command(name="rps", description="rock paper scissors vs the house, ~3% house edge on the win")
 async def rps(ctx, amount: Option(int, "bet", min_value=1), choice: Option(str, "pick one", choices=["rock", "paper", "scissors"])):
     await do_rps(ctx, amount, choice)
 
@@ -3731,11 +3789,13 @@ async def do_testmode(ctx):
     if not is_owner(ctx.author, ctx.guild):
         await reply(ctx, content="only the server owner can toggle testmode", ephemeral=True)
         return
-    all_cfg = loadCfg()
-    gcfg = get_guild_cfg(all_cfg, ctx.guild)
-    gcfg["testmode"] = not gcfg.get("testmode", False)
-    saveCfg(all_cfg)
-    state = "ON" if gcfg["testmode"] else "off"
+    with store.locked(cfgschema.CFG_FILE):
+        all_cfg = loadCfg()
+        gcfg = get_guild_cfg(all_cfg, ctx.guild)
+        gcfg["testmode"] = not gcfg.get("testmode", False)
+        saveCfg(all_cfg)
+        new_state = gcfg["testmode"]
+    state = "ON" if new_state else "off"
     log_event(ctx.guild.name, f"{ctx.author.display_name} turned testmode {state} - while on, the owner's own game bets always win (for checking payouts/embeds), everyone else stays normal random")
     await reply(ctx, content=f"testmode is now **{state}** - while on, your own coinflip/dice/slots/roulette/war bets always win so you can sanity-check payouts. everyone else's games are untouched.")
 
@@ -3779,11 +3839,14 @@ async def do_addchips(ctx, user, amount):
     if not is_manager(ctx.author, ctx.guild):
         await reply(ctx, content="managers only", ephemeral=True)
         return
-    econ = loadEcon()
-    a = acct(econ, ctx.guild, user)
-    a["bal"] += amount
-    save(econ)
-    await reply(ctx, content=f"gave {user.mention} {chips(amount)}, new bal {chips(a['bal'])}")
+    with store.locked(econ_file):
+        econ = loadEcon()
+        a = acct(econ, ctx.guild, user)
+        a["bal"] += amount
+        save(econ)
+        new_bal = a["bal"]
+    log_event(ctx.guild.name, f"{ctx.author.display_name} gave {user.display_name} {chips(amount)}")
+    await reply(ctx, content=f"gave {user.mention} {chips(amount)}, new bal {chips(new_bal)}")
 
 
 @bot.slash_command(name="addchips", description="manager - add chips to someone")
@@ -3803,11 +3866,14 @@ async def do_removechips(ctx, user, amount):
     if not is_manager(ctx.author, ctx.guild):
         await reply(ctx, content="managers only", ephemeral=True)
         return
-    econ = loadEcon()
-    a = acct(econ, ctx.guild, user)
-    a["bal"] = max(0, a["bal"] - amount)
-    save(econ)
-    await reply(ctx, content=f"took {chips(amount)} from {user.mention}, new bal {chips(a['bal'])}")
+    with store.locked(econ_file):
+        econ = loadEcon()
+        a = acct(econ, ctx.guild, user)
+        a["bal"] = max(0, a["bal"] - amount)
+        save(econ)
+        new_bal = a["bal"]
+    log_event(ctx.guild.name, f"{ctx.author.display_name} took {chips(amount)} from {user.display_name}")
+    await reply(ctx, content=f"took {chips(amount)} from {user.mention}, new bal {chips(new_bal)}")
 
 
 @bot.slash_command(name="removechips", description="manager - take chips from someone")

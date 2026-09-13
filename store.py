@@ -36,13 +36,23 @@ to local JSON files exactly like this project always worked before -
 nothing breaks for local-only testing, you just won't get cross-machine
 sync until Upstash is configured.
 """
+import contextlib
 import json
 import os
+import time
+import uuid
 from pathlib import Path
 
 import requests
 
+try:
+    import fcntl
+    _HAS_FCNTL = True
+except ImportError:  # Windows - no fcntl, local-mode locking becomes a no-op there
+    _HAS_FCNTL = False
+
 _LOCAL_BASE = Path(__file__).parent
+_LOCK_DIR = _LOCAL_BASE / ".locks"
 _WARNED = set()  # only print the "falling back to local file" warning once per key, not on every call
 _backend_logged = False  # only print which backend is active once, on first real use
 
@@ -151,3 +161,106 @@ def save(name_or_path, data):
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
     tmp.replace(path)
+
+
+# ---------------- cross-process locking ----------------
+# THE PROBLEM: every caller does load() -> mutate the dict in Python -> save().
+# That round trip is NOT atomic. If two of those overlap - the bot handling a
+# !give at the same moment the dashboard saves a settings change, or the
+# hourly background loop touching config.json while someone runs !testmode -
+# whichever one calls save() SECOND wins and silently throws away whatever the
+# first one wrote, because it started from a copy of the data that was already
+# stale by the time it saves. That's the "I did the thing but it didn't stick"
+# bug class (testmode not turning off, !give not actually moving chips).
+#
+# THE FIX: wrap the whole load-mutate-save span for a given key in a lock, so
+# a second load() for that same key has to wait until the first transaction's
+# save() has finished:
+#
+#   with store.locked(econ_file):
+#       econ = store.load(econ_file)
+#       ...mutate...
+#       store.save(econ_file, econ)
+#
+# Local-file mode uses a real OS-level lock (fcntl.flock on a .lock file) -
+# this works across the bot process and every dashboard worker as long as
+# they're on the same machine/container. Upstash mode uses a short-lived
+# SET-if-not-exists token as a distributed lock, so it also works across
+# separate machines (bot on a VM, dashboard on Render, etc).
+#
+# Both are BEST-EFFORT: if a lock can't be acquired within a few seconds
+# (crashed process left a lock file behind, network hiccup with Upstash),
+# this proceeds anyway rather than hanging the bot/dashboard forever. That's
+# a deliberate trade-off - a rare missed lock beats an actual outage.
+_UPSTASH_LOCK_TTL_MS = 8000
+_LOCK_WAIT_TIMEOUT_S = 6
+_LOCK_POLL_S = 0.05
+
+
+def _local_lock_path(key):
+    _LOCK_DIR.mkdir(exist_ok=True)
+    return _LOCK_DIR / f"{key}.lock"
+
+
+@contextlib.contextmanager
+def _local_file_lock(key):
+    if not _HAS_FCNTL:
+        yield
+        return
+    fh = open(_local_lock_path(key), "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
+def _upstash_acquire_lock(key):
+    lock_key = f"lock:{key}"
+    token = uuid.uuid4().hex
+    deadline = time.time() + _LOCK_WAIT_TIMEOUT_S
+    while time.time() < deadline:
+        try:
+            r = requests.post(_upstash_url(), headers=_headers(),
+                               json=["SET", lock_key, token, "NX", "PX", _UPSTASH_LOCK_TTL_MS],
+                               timeout=10)
+            r.raise_for_status()
+            if r.json().get("result") == "OK":
+                return token
+        except Exception:
+            return None  # can't reach Upstash to lock at all - proceed unlocked rather than hang
+        time.sleep(_LOCK_POLL_S)
+    return None  # someone else held it the whole time we waited - proceed anyway, best-effort
+
+
+def _upstash_release_lock(key, token):
+    if not token:
+        return
+    lock_key = f"lock:{key}"
+    try:
+        # only release if we still hold it - if our TTL already expired and
+        # someone else grabbed the lock, don't delete THEIRS out from under them
+        r = requests.post(_upstash_url(), headers=_headers(), json=["GET", lock_key], timeout=10)
+        if r.ok and r.json().get("result") == token:
+            requests.post(_upstash_url(), headers=_headers(), json=["DEL", lock_key], timeout=10)
+    except Exception:
+        pass  # TTL will clear it out on its own shortly either way
+
+
+@contextlib.contextmanager
+def locked(name_or_path):
+    """Advisory lock around a load-mutate-save transaction for one stored
+    key. See the module comment above for why this exists and how to use it."""
+    key = _key_for(name_or_path)
+    if _enabled():
+        token = _upstash_acquire_lock(key)
+        try:
+            yield
+        finally:
+            _upstash_release_lock(key, token)
+    else:
+        with _local_file_lock(key):
+            yield
