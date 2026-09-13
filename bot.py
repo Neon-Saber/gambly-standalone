@@ -4122,14 +4122,97 @@ async def do_reset(ctx, target):
     await reply(ctx, content=f"reset {target.mention} to {chips(starting_bal)}")
 
 
-@bot.slash_command(name="reset", description="manager - reset someones balance")
-async def reset(ctx, user: Option(discord.Member, "who", required=False) = None):
+class ResetAllConfirm(discord.ui.View):
+    """Confirm gate for !reset @everyone / /reset everyone:True - this is
+    the single most destructive command in the whole bot (every account in
+    the server wiped, no undo) so it gets its own explicit are-you-sure on
+    top of the manager-only check, same idea as AllInConfirm but scaled up
+    to the whole server instead of one bet."""
+    def __init__(self, author, guild, count):
+        super().__init__(timeout=30)
+        self.author = author
+        self.guild = guild
+        self.count = count
+
+    async def interaction_check(self, i):
+        if i.user.id != self.author.id:
+            await i.response.send_message("only the person who ran this can confirm it", ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        for c in self.children:
+            c.disabled = True
+        if self.message:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(content="reset-everyone confirmation expired, nothing was touched.", view=self)
+
+    @discord.ui.button(label="Yes, wipe everyone", style=discord.ButtonStyle.danger)
+    async def confirm(self, b, i):
+        async with store.locked(econ_file_for(self.guild)):
+            econ = loadEcon(econ_file_for(self.guild))
+            g = ensure_guild(econ, self.guild)
+            for uid, u in g.get("users", {}).items():
+                g["users"][uid] = new_acct(u.get("name", "player"))
+            save(econ, econ_file_for(self.guild))
+        for c in self.children:
+            c.disabled = True
+        log_event(self.guild.name, f"{self.author.display_name} reset EVERYONE's account ({self.count} players)")
+        await i.response.edit_message(content=f"done - all {self.count} accounts reset to {chips(starting_bal)}.", view=self)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, b, i):
+        for c in self.children:
+            c.disabled = True
+        await i.response.edit_message(content="cancelled, nothing was touched.", view=self)
+
+
+async def do_reset_all(ctx):
+    if not need_guild(ctx):
+        await reply(ctx, content="this is a server-only feature", ephemeral=True)
+        return
+    if not is_manager(ctx.author, ctx.guild):
+        await reply(ctx, content="managers only", ephemeral=True)
+        return
+    econ = loadEcon()
+    g = ensure_guild(econ, ctx.guild)
+    count = len(g.get("users", {}))
+    if count == 0:
+        await reply(ctx, content="nobody's got an account here yet - nothing to reset", ephemeral=True)
+        return
+    view = ResetAllConfirm(ctx.author, ctx.guild, count)
+    await reply(
+        ctx,
+        content=(f"⚠️ this wipes **every single account** in this server ({count} players) back to a fresh "
+                 f"{chips(starting_bal)} start - inventory, streaks, rebirths, everything. can't be undone. sure?"),
+        view=view,
+    )
+
+
+@bot.slash_command(name="reset", description="manager - reset someone's account (or everyone's)")
+async def reset(ctx, user: Option(discord.Member, "who", required=False) = None,
+                 everyone: Option(bool, "reset EVERYONE's account instead - ignores 'user'", required=False) = False):
+    if everyone:
+        await do_reset_all(ctx)
+        return
     await do_reset(ctx, user or ctx.author)
 
 
 @bot.command(name="reset")
-async def reset_cmd(ctx, user: discord.Member = None):
-    await do_reset(ctx, user or ctx.author)
+async def reset_cmd(ctx, user: str = None):
+    if user is None:
+        await do_reset(ctx, ctx.author)
+        return
+    everyone_mention = ctx.guild.default_role.mention if ctx.guild else None  # "@everyone"
+    if user in ("@everyone", "everyone") or (everyone_mention and user == everyone_mention):
+        await do_reset_all(ctx)
+        return
+    try:
+        member = await commands.MemberConverter().convert(ctx, user)
+    except commands.MemberNotFound:
+        await reply(ctx, content=f"couldn't find anyone called `{user}`", ephemeral=True)
+        return
+    await do_reset(ctx, member)
 
 
 async def do_setbalance(ctx, target, wallet, bank):
