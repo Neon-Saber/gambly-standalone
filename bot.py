@@ -188,29 +188,97 @@ GAME_COMMANDS = {"coinflip", "slots", "dice", "roulette", "blackjack", "allin", 
 HOLIDAY_SYMS = {"🎄": 40, "🎁": 25, "⛄": 15, "🦌": 10, "🔔": 5, "⭐": 2}
 
 
-# ---------------- shorthand amount parsing for prefix (!) commands ----------------
-# slash commands get Discord's native number input, but prefix commands are
-# just plain text - so !bet 15k / !deposit 1.5m / !give @user 2b all work the
-# same as typing the full number out. Slash command options are untouched
-# (they stay plain ints - Discord already gives those a proper number field).
-class Amount(commands.Converter):
-    SUFFIXES = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+# ---------------- shorthand amount parsing for prefix (!) AND slash (/) commands ----------------
+# used to be prefix-only ("!bet 15k" / "!deposit 1.5m" / "!give @user 2b"),
+# with slash options left as Discord's plain int field - so /bet couldn't
+# take "15k" or "all" the way !bet could. parse_amount_core is now the one
+# place that logic lives; the Amount converter (prefix) and the
+# parse_slash_amount* helpers (slash) both just call into it with whatever
+# balance "all" should resolve against, so both interfaces genuinely accept
+# identical input instead of two versions that drift out of sync.
+AMOUNT_SUFFIXES = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+MAX_BET_AMOUNT = 10 ** 15  # sanity ceiling, independent of anyone's real balance - nobody legitimately needs more than this in one command
 
+
+def parse_amount_core(raw, balance):
+    """Pure parsing, no ctx/IO - easier to reason about and test in
+    isolation than a converter. Returns an int or raises ValueError with a
+    message that's safe to show directly to whoever typed it."""
+    raw = str(raw).strip().lower().replace(",", "").replace("_", "").replace(" ", "")
+    if not raw:
+        raise ValueError("give me an amount, like `250`, `15k`, `1.5m`, or `all`")
+    if raw in ("all", "max", "everything"):
+        if balance <= 0:
+            raise ValueError("you don't have anything to use there")
+        return balance
+    mult = AMOUNT_SUFFIXES.get(raw[-1])
+    num_part = raw[:-1] if mult else raw
+    mult = mult or 1
+    try:
+        value = float(num_part)
+    except ValueError:
+        raise ValueError(f"`{raw}` isn't a valid amount - try `250`, `15k`, `1.5m`, `1b`, or `all`")
+    value = int(value * mult)
+    if value <= 0:
+        raise ValueError("amount has to be a positive number")
+    if value > MAX_BET_AMOUNT:
+        raise ValueError(f"that's way more than anyone could realistically have - max is {MAX_BET_AMOUNT:,}")
+    return value
+
+
+class Amount(commands.Converter):
     async def convert(self, ctx, argument):
-        raw = argument.strip().lower().replace(",", "").replace("_", "").replace(" ", "")
-        if not raw:
-            raise commands.BadArgument("give me an amount, like `250`, `15k`, or `1.5m`")
-        mult = self.SUFFIXES.get(raw[-1])
-        num_part = raw[:-1] if mult else raw
-        mult = mult or 1
+        space = get_space(ctx)
+        econ = loadEcon(econ_file_for(space))
+        a = acct(econ, space, ctx.author)
         try:
-            value = float(num_part)
-        except ValueError:
-            raise commands.BadArgument(f"`{argument}` isn't a valid amount - try `250`, `15k`, `1.5m`, or `1b`")
-        value = int(value * mult)
-        if value <= 0:
-            raise commands.BadArgument("amount has to be a positive number")
-        return value
+            return parse_amount_core(argument, a["bal"])
+        except ValueError as e:
+            raise commands.BadArgument(str(e))
+
+
+async def parse_slash_amount(ctx, raw):
+    """Slash-side counterpart to Amount - 'all' resolves to wallet balance.
+    Covers every slash command that bets/spends/moves wallet chips (games,
+    give, bounty, invest, deposit). Replies with a specific ephemeral error
+    and returns None on anything invalid; the caller bails out on None."""
+    space = get_space(ctx)
+    econ = loadEcon(econ_file_for(space))
+    a = acct(econ, space, ctx.author)
+    try:
+        return parse_amount_core(raw, a["bal"])
+    except ValueError as e:
+        await reply(ctx, content=str(e), ephemeral=True)
+        return None
+
+
+async def parse_slash_amount_bank(ctx, raw):
+    """Same as parse_slash_amount but 'all' resolves to BANK balance - only
+    !withdraw/withdraw actually pulls from that pool, so it's the one place
+    'all' has to mean something other than the wallet."""
+    space = get_space(ctx)
+    econ = loadEcon(econ_file_for(space))
+    a = acct(econ, space, ctx.author)
+    try:
+        return parse_amount_core(raw, a.get("bank", 0))
+    except ValueError as e:
+        await reply(ctx, content=str(e), ephemeral=True)
+        return None
+
+
+async def parse_slash_amount_loan(ctx, raw):
+    """Same again but 'all' resolves to the full remaining loan owed, not
+    any balance - repaying is bounded by what you owe, not what you have."""
+    space = get_space(ctx)
+    econ = loadEcon(econ_file_for(space))
+    a = acct(econ, space, ctx.author)
+    loan = a.get("loan")
+    owed = loan["owed"] if loan else 0
+    try:
+        return parse_amount_core(raw, owed)
+    except ValueError as e:
+        await reply(ctx, content=str(e), ephemeral=True)
+        return None
 
 
 # ---------------- runtime-tunable settings, editable from the admin panel ----------------
@@ -1342,7 +1410,10 @@ async def do_give(ctx, user, amount):
 
 
 @bot.slash_command(name="give", description="send chips to someone")
-async def give(ctx, user: Option(discord.Member, "who to pay"), amount: Option(int, "how much", min_value=1)):
+async def give(ctx, user: Option(discord.Member, "who to pay"), amount: Option(str, "how much (or 'all')")):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_give(ctx, user, amount)
 
 
@@ -1484,7 +1555,10 @@ async def do_deposit(ctx, amount):
 
 
 @bot.slash_command(name="deposit", description="move chips into your bank, safe from robbery")
-async def deposit(ctx, amount: Option(int, "how much", min_value=1)):
+async def deposit(ctx, amount: Option(str, "how much (or 'all')")):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_deposit(ctx, amount)
 
 
@@ -1510,7 +1584,10 @@ async def do_withdraw(ctx, amount):
 
 
 @bot.slash_command(name="withdraw", description="move chips from your bank back to your wallet")
-async def withdraw(ctx, amount: Option(int, "how much", min_value=1)):
+async def withdraw(ctx, amount: Option(str, "how much (or 'all')")):
+    amount = await parse_slash_amount_bank(ctx, amount)
+    if amount is None:
+        return
     await do_withdraw(ctx, amount)
 
 
@@ -1634,7 +1711,10 @@ async def do_repay(ctx, amount):
 
 
 @bot.slash_command(name="repay", description="pay back part or all of your loan")
-async def repay(ctx, amount: Option(int, "how much", min_value=1)):
+async def repay(ctx, amount: Option(str, "how much (or 'all')")):
+    amount = await parse_slash_amount_loan(ctx, amount)
+    if amount is None:
+        return
     await do_repay(ctx, amount)
 
 
@@ -2292,7 +2372,10 @@ async def do_bounty(ctx, target, amount):
 
 
 @bot.slash_command(name="bounty", description="put chips on someone's head, claimed via a successful rob")
-async def bounty(ctx, user: Option(discord.Member, "who"), amount: Option(int, "how much", min_value=1)):
+async def bounty(ctx, user: Option(discord.Member, "who"), amount: Option(str, "how much (or 'all')")):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_bounty(ctx, user, amount)
 
 
@@ -2350,7 +2433,10 @@ async def do_invest(ctx, amount, days):
 
 
 @bot.slash_command(name="invest", description="lock chips up for better returns than the bank")
-async def invest(ctx, amount: Option(int, "how much", min_value=1), days: Option(int, "term length", choices=list(INVEST_RATES.keys()))):
+async def invest(ctx, amount: Option(str, "how much (or 'all')"), days: Option(int, "term length", choices=list(INVEST_RATES.keys()))):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_invest(ctx, amount, days)
 
 
@@ -2413,7 +2499,10 @@ async def do_coinflip(ctx, amount, side):
 
 
 @bot.slash_command(name="coinflip", description="flip a coin, ~3% house edge on the payout")
-async def coinflip(ctx, amount: Option(int, "bet", min_value=1), side: Option(str, "pick one", choices=["heads", "tails"])):
+async def coinflip(ctx, amount: Option(str, "bet (or 'all')"), side: Option(str, "pick one", choices=["heads", "tails"])):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_coinflip(ctx, amount, side)
 
 
@@ -2502,7 +2591,10 @@ async def do_slots(ctx, amount):
 
 
 @bot.slash_command(name="slots", description="spin it")
-async def slots(ctx, amount: Option(int, "bet", min_value=1)):
+async def slots(ctx, amount: Option(str, "bet (or 'all')")):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_slots(ctx, amount)
 
 
@@ -2564,7 +2656,10 @@ async def do_dice(ctx, amount, guess):
 
 
 @bot.slash_command(name="dice", description="guess the roll, ~4.8x payout")
-async def dice(ctx, amount: Option(int, "bet", min_value=1), guess: Option(int, "1-6", min_value=1, max_value=6)):
+async def dice(ctx, amount: Option(str, "bet (or 'all')"), guess: Option(int, "1-6", min_value=1, max_value=6)):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_dice(ctx, amount, guess)
 
 
@@ -2651,7 +2746,10 @@ async def do_roulette(ctx, amount, choice):
 
 
 @bot.slash_command(name="roulette", description="bet on red/black/green or a straight number")
-async def roulette(ctx, amount: Option(int, "bet", min_value=1), choice: Option(str, "red, black, green, or 0-36")):
+async def roulette(ctx, amount: Option(str, "bet (or 'all')"), choice: Option(str, "red, black, green, or 0-36")):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_roulette(ctx, amount, choice)
 
 
@@ -2786,7 +2884,10 @@ async def do_war(ctx, amount):
 
 
 @bot.slash_command(name="war", description="one card each, highest wins, tie is a push")
-async def war(ctx, amount: Option(int, "bet", min_value=1)):
+async def war(ctx, amount: Option(str, "bet (or 'all')")):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_war(ctx, amount)
 
 
@@ -2918,7 +3019,10 @@ async def do_hilo(ctx, amount):
 
 
 @bot.slash_command(name="hilo", description="guess higher or lower, pot grows each correct guess")
-async def hilo(ctx, amount: Option(int, "bet", min_value=1)):
+async def hilo(ctx, amount: Option(str, "bet (or 'all')")):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_hilo(ctx, amount)
 
 
@@ -2966,7 +3070,10 @@ async def do_crash(ctx, amount, target):
 
 
 @bot.slash_command(name="crash", description="pick a cash-out multiplier, see if the crash clears it")
-async def crash(ctx, amount: Option(int, "bet", min_value=1), target: Option(float, "cash-out multiplier, e.g. 2.5", min_value=1.01)):
+async def crash(ctx, amount: Option(str, "bet (or 'all')"), target: Option(float, "cash-out multiplier, e.g. 2.5", min_value=1.01)):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_crash(ctx, amount, target)
 
 
@@ -3116,7 +3223,10 @@ async def do_blackjack(ctx, amount):
 
 
 @bot.slash_command(name="blackjack", description="hit or stand vs the dealer")
-async def blackjack(ctx, amount: Option(int, "bet", min_value=1)):
+async def blackjack(ctx, amount: Option(str, "bet (or 'all')")):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_blackjack(ctx, amount)
 
 
@@ -3206,7 +3316,10 @@ async def do_duel(ctx, opponent, amount):
 
 
 @bot.slash_command(name="duel", description="challenge someone to a coinflip wager")
-async def duel(ctx, user: Option(discord.Member, "who to challenge"), amount: Option(int, "wager", min_value=1)):
+async def duel(ctx, user: Option(discord.Member, "who to challenge"), amount: Option(str, "wager (or 'all')")):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_duel(ctx, user, amount)
 
 
@@ -3285,7 +3398,10 @@ async def do_horserace(ctx, amount, horse_name):
 
 
 @bot.slash_command(name="horserace", description="bet on a horse, payout scales with its odds")
-async def horserace(ctx, amount: Option(int, "bet", min_value=1), horse: Option(str, "which horse", choices=[h["name"] for h in HORSES])):
+async def horserace(ctx, amount: Option(str, "bet (or 'all')"), horse: Option(str, "which horse", choices=[h["name"] for h in HORSES])):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_horserace(ctx, amount, horse)
 
 
@@ -3323,7 +3439,10 @@ async def do_plinko(ctx, amount):
 
 
 @bot.slash_command(name="plinko", description="drop a chip through the pegs")
-async def plinko(ctx, amount: Option(int, "bet", min_value=1)):
+async def plinko(ctx, amount: Option(str, "bet (or 'all')")):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_plinko(ctx, amount)
 
 
@@ -3492,7 +3611,10 @@ async def do_mines(ctx, amount, mine_count):
 
 
 @bot.slash_command(name="mines", description="pick safe tiles, avoid mines, cash out anytime")
-async def mines(ctx, amount: Option(int, "bet", min_value=1), mine_count: Option(int, "how many mines (1-19)", min_value=1, max_value=MINES_TOTAL - 1) = 5):
+async def mines(ctx, amount: Option(str, "bet (or 'all')"), mine_count: Option(int, "how many mines (1-19)", min_value=1, max_value=MINES_TOTAL - 1) = 5):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_mines(ctx, amount, mine_count)
 
 
@@ -3528,7 +3650,10 @@ async def do_wheel(ctx, amount):
 
 
 @bot.slash_command(name="wheel", description="spin the wheel, multiplier ranges from 0x to 10x")
-async def wheel(ctx, amount: Option(int, "bet", min_value=1)):
+async def wheel(ctx, amount: Option(str, "bet (or 'all')")):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_wheel(ctx, amount)
 
 
@@ -3595,7 +3720,10 @@ async def do_keno(ctx, amount, raw_numbers):
 
 
 @bot.slash_command(name="keno", description="pick 1-5 numbers (1-40), match the draw for a payout")
-async def keno(ctx, amount: Option(int, "bet", min_value=1), numbers: Option(str, "your picks, space separated e.g. '4 15 22'")):
+async def keno(ctx, amount: Option(str, "bet (or 'all')"), numbers: Option(str, "your picks, space separated e.g. '4 15 22'")):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_keno(ctx, amount, numbers)
 
 
@@ -3652,7 +3780,10 @@ async def do_baccarat(ctx, amount, choice):
 
 
 @bot.slash_command(name="baccarat", description="bet on player, banker, or tie")
-async def baccarat(ctx, amount: Option(int, "bet", min_value=1), choice: Option(str, "pick one", choices=["player", "banker", "tie"])):
+async def baccarat(ctx, amount: Option(str, "bet (or 'all')"), choice: Option(str, "pick one", choices=["player", "banker", "tie"])):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_baccarat(ctx, amount, choice)
 
 
@@ -3702,7 +3833,10 @@ async def do_rps(ctx, amount, choice):
 
 
 @bot.slash_command(name="rps", description="rock paper scissors vs the house, ~3% house edge on the win")
-async def rps(ctx, amount: Option(int, "bet", min_value=1), choice: Option(str, "pick one", choices=["rock", "paper", "scissors"])):
+async def rps(ctx, amount: Option(str, "bet (or 'all')"), choice: Option(str, "pick one", choices=["rock", "paper", "scissors"])):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_rps(ctx, amount, choice)
 
 
@@ -3753,7 +3887,10 @@ async def do_ladder(ctx, amount, rungs):
 
 
 @bot.slash_command(name="ladder", description="pick 1-6 rungs, each one doubles your bet, miss one and lose it all")
-async def ladder(ctx, amount: Option(int, "bet", min_value=1), rungs: Option(int, "how many rungs to attempt (1-6)", min_value=1, max_value=6)):
+async def ladder(ctx, amount: Option(str, "bet (or 'all')"), rungs: Option(int, "how many rungs to attempt (1-6)", min_value=1, max_value=6)):
+    amount = await parse_slash_amount(ctx, amount)
+    if amount is None:
+        return
     await do_ladder(ctx, amount, rungs)
 
 
