@@ -28,6 +28,20 @@ this enabled doesn't slowly fill up with old status posts. If that message
 ever gets deleted or the channel gets swapped, this just posts a fresh one
 and starts tracking that instead - see status_message_id in config_schema.py.
 
+UPDATE_INTERVAL_SECONDS is 60, not lower - _uptime_str() only has minute
+precision, so anything faster than once a minute would just be editing the
+same content over and over for no visible change, burning API rate limit
+budget shared with every other command the bot handles.
+
+MESSAGE CACHING: once a guild's status message has been found/sent once
+this session, self._msg_cache holds the live discord.Message object (keyed
+by guild id, paired with the channel id it belongs to) so later cycles
+skip fetch_message entirely and edit it directly - that fetch was a whole
+extra API call per cycle just to confirm something we already knew. If the
+dashboard channel gets swapped, the cached channel id won't match anymore
+and this falls back to the normal fetch-or-send path in the new channel;
+same if the cached message 404s/403s for any reason.
+
 WHY _sync_guild IS WRAPPED IN store.locked(): on_ready fires for every
 guild AND status_loop runs its first pass the moment the bot's ready
 (tasks.loop starts immediately once before_loop's wait_until_ready()
@@ -57,7 +71,7 @@ import embeds
 import store
 import version
 
-UPDATE_INTERVAL_MINUTES = 15
+UPDATE_INTERVAL_SECONDS = 60
 
 OPENERS = [
     "still here, still dealing cards.",
@@ -77,6 +91,7 @@ class BotStatus(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.start_time = discord.utils.utcnow()
+        self._msg_cache = {}  # guild.id -> (channel_id, discord.Message)
         self.status_loop.start()
 
     def cog_unload(self):
@@ -125,6 +140,22 @@ class BotStatus(commands.Cog):
 
             embed = await self._build_embed(guild)
 
+            # already have the live Message object from earlier this
+            # session - edit it directly instead of fetching it again just
+            # to confirm it's still there. Only trust the cache if it's for
+            # THIS channel - if the dashboard swapped channels since we
+            # cached it, editing the old object would silently update the
+            # status message in the wrong (old) channel.
+            cached = self._msg_cache.get(guild.id)
+            if cached and cached[0] == channel_id:
+                try:
+                    await cached[1].edit(embed=embed)
+                    return
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    self._msg_cache.pop(guild.id, None)  # stale - fall through to the normal path below
+            elif cached:
+                self._msg_cache.pop(guild.id, None)  # channel changed since we cached this
+
             msg = None
             msg_id = g_cfg.get("status_message_id")
             if msg_id:
@@ -136,10 +167,12 @@ class BotStatus(commands.Cog):
             try:
                 if msg:
                     await msg.edit(embed=embed)
+                    self._msg_cache[guild.id] = (channel_id, msg)
                 else:
                     new_msg = await channel.send(embed=embed)
                     g_cfg["status_message_id"] = str(new_msg.id)
                     cfgschema.save_cfg(all_cfg)
+                    self._msg_cache[guild.id] = (channel_id, new_msg)
             except discord.Forbidden:
                 print(f"[bot_status] no permission to post/edit in the status channel in '{guild.name}' - "
                       f"check the bot has Send Messages/Embed Links there")
@@ -151,7 +184,7 @@ class BotStatus(commands.Cog):
         for guild in self.bot.guilds:
             await self._sync_guild(guild)
 
-    @tasks.loop(minutes=UPDATE_INTERVAL_MINUTES)
+    @tasks.loop(seconds=UPDATE_INTERVAL_SECONDS)
     async def status_loop(self):
         for guild in self.bot.guilds:
             await self._sync_guild(guild)
